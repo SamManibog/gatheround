@@ -1,14 +1,17 @@
-use std::{collections::{BTreeMap, HashMap, HashSet}, path::{Path, PathBuf}};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, HashMap},
+    marker::PhantomData,
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
 use roaring::RoaringBitmap;
 
 use crate::{
-    color::IColor,
     ecs::{Entity, NamedEntityManager, ResourceManager},
-    geometry::{CollisionShape, IConvexShape, IRect, IVec2},
-    piece_components::{
-        ImageInfo, PatternInfo, TextboxInfo, TextureInfo, VisualComponent, VisualInfo,
-    },
+    geometry::{CollisionShape, IConvexShape, IVec2},
+    piece_components::TextureInfo,
     renderer::IRenderer,
 };
 
@@ -61,43 +64,174 @@ impl<'a, R: IRenderer> RuntimeInfo<'a, R> {
 
 pub struct VisualComponentProvider<'a, F, I> {
     /// fonts usable in rendering visuals
-    fonts: &'a HashMap<String, FontEntry<F>>,
+    fonts: *mut FontManager<F>,
 
     /// the images used for rendering visuals
-    images: &'a HashMap<String, I>,
-}
+    images: *mut HashMap<String, I>,
 
-impl<'a, F, I> Clone for VisualComponentProvider<'a, F, I> {
-    fn clone(&self) -> Self {
-        Self {
-            fonts: self.fonts,
-            images: self.images,
-        }
-    }
+    marker: PhantomData<&'a ()>,
 }
-impl<'a, F, I> Copy for VisualComponentProvider<'a, F, I> {}
 
 impl<'a, F, I> VisualComponentProvider<'a, F, I> {
-    pub fn get_font(&self, name: &String) -> &F {
-        self.fonts
-            .get_by_name(name)
-            .expect(&format!("Failed to get font '{}'; not loaded.", name))
+    pub fn new(fonts: &'a mut FontManager<F>, images: &'a mut HashMap<String, I>) -> Self {
+        Self {
+            fonts: fonts as *mut FontManager<F>,
+            images: images as *mut HashMap<String, I>,
+            marker: PhantomData,
+        }
     }
 
-    pub fn get_image(&self, name: &String) -> &I {
-        self.images
-            .get_by_name(name)
-            .expect(&format!("Failed to get image '{}'; not loaded.", name))
+    pub fn get_or_load_font<R: IRenderer<Font = F>>(
+        &mut self,
+        renderer: &mut R,
+        path: &String,
+        size: u32,
+        characters: &str,
+    ) -> Option<&F> {
+        // SAFETY: only one font reference can be acquired at the same time because this struct is
+        // borrowed mutably, there is no danger of multiple mutable references to the font manager
+        let fonts = unsafe { &mut *self.fonts };
+        if let Some(f) = fonts.get_font(path, size, characters) {
+            return Some(f);
+        }
+
+        let fonts = unsafe { &mut *self.fonts };
+        fonts.load_font(renderer, path, size, characters);
+        fonts.get_font(path, size, characters)
+    }
+
+    pub fn get_or_load_image<R: IRenderer<Image = I>>(
+        &mut self,
+        renderer: &mut R,
+        path: &String,
+    ) -> Option<&I> {
+        // SAFETY: only one image reference can be acquired at the same time because this struct is
+        // borrowed mutably, there is no danger of multiple mutable references to the image manager
+        let images = unsafe { &mut *self.images };
+        if let Some(i) = images.get(path) {
+            return Some(i);
+        }
+
+        let images = unsafe { &mut *self.images };
+        let path_buf = PathBuf::from(path);
+        let image = if let Ok(i) = renderer.load_image(&path_buf) {
+            i
+        } else {
+            return None;
+        };
+        images.insert(path.clone(), image);
+        images.get(path)
     }
 }
 
-/// a manager for fonts saved to memory
+/// an entry in a font manager for fonts saved to memory
 pub struct FontEntry<F> {
     /// the set of characters loaded for this font
     pub charset: RoaringBitmap,
 
     /// a map from font size to font
     pub sizes: BTreeMap<u32, F>,
+}
+
+pub struct FontManager<F> {
+    fonts: HashMap<String, FontEntry<F>>,
+}
+
+impl<F> Default for FontManager<F> {
+    fn default() -> Self {
+        Self {
+            fonts: Default::default(),
+        }
+    }
+}
+
+impl<F> FontManager<F> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// loads a font, returning true on success or if the font was already loaded
+    pub fn load_font<R: IRenderer<Font = F>>(
+        &mut self,
+        renderer: &mut R,
+        path: &String,
+        size: u32,
+        characters: &str,
+    ) -> bool {
+        let path_result = PathBuf::try_from(path);
+        if path_result.is_err() {
+            return false;
+        }
+        let path_buf = path_result.unwrap();
+
+        if let Some(entry) = self.fonts.get_mut(path) {
+            // update existing entry with new characters
+            let mut needs_update = false;
+            for c in characters.chars() {
+                if entry.charset.insert(c as u32) {
+                    needs_update = true;
+                }
+            }
+
+            if !needs_update && entry.sizes.contains_key(&size) {
+                return true;
+            }
+
+            let characters: String = entry
+                .charset
+                .iter()
+                .map(|e| unsafe { char::from_u32_unchecked(e) })
+                .collect();
+            if needs_update {
+                // reload all contained font sizes
+                for (size, font) in entry.sizes.iter_mut() {
+                    let font_result = renderer.load_font(&path_buf, *size, &characters);
+                    if font_result.is_err() {
+                        return false;
+                    }
+                    *font = font_result.unwrap();
+                }
+            }
+
+            // insert the new font size
+            let font_result = renderer.load_font(&path_buf, size, &characters);
+            if font_result.is_err() {
+                return false;
+            }
+            let font = font_result.unwrap();
+            entry.sizes.insert(size, font);
+
+            return true;
+        }
+
+        // completely new font entry
+        let font_result = renderer.load_font(&path_buf, size, characters);
+        if font_result.is_err() {
+            return false;
+        }
+        let font = font_result.unwrap();
+
+        let entry = FontEntry {
+            charset: RoaringBitmap::from_iter(characters.chars().map(|c| c as u32)),
+            sizes: BTreeMap::from([(size, font)]),
+        };
+        self.fonts.insert(path.clone(), entry);
+
+        true
+    }
+
+    pub fn get_font(&self, path: &String, size: u32, characters: &str) -> Option<&F> {
+        let font_entry = self.fonts.get(path)?;
+        if characters
+            .chars()
+            .position(|c| !font_entry.charset.contains(c as u32))
+            .is_some()
+        {
+            None
+        } else {
+            font_entry.sizes.get(&size)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -121,12 +255,12 @@ pub struct PieceCategoryEntityMarker;
 pub type PieceCategoryEntity = Entity<PieceCategoryEntityMarker>;
 
 /// persistent global game components
-pub struct GameResources<C: IColor, R: IRect, V: IVec2, S: IConvexShape<V>, T, F, I> {
+pub struct GameResources<V: IVec2, S: IConvexShape<V>, T, F, I> {
     /// loaded fonts to speed up font rendering capabilities
-    pub fonts: 
+    pub fonts: FontManager<F>,
 
     /// loaded images to speed up image texture generation capabilities
-    pub images: HashMap<String, F>,
+    pub images: HashMap<String, I>,
 
     /// textures rendered from piece visuals
     pub piece_textures: ResourceManager<TextureEntity, TextureInfo<T>>,
@@ -144,12 +278,11 @@ pub struct GameResources<C: IColor, R: IRect, V: IVec2, S: IConvexShape<V>, T, F
     pub piece_categories: NamedEntityManager<PieceCategoryEntity>,
 }
 
-impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape<V>, T, F, I> Default
-    for GameResources<C, R, V, S, T, F, I>
-{
+impl<V: IVec2, S: IConvexShape<V>, T, F, I> Default for GameResources<V, S, T, F, I> {
     fn default() -> Self {
         Self {
-            visuals: Default::default(),
+            fonts: Default::default(),
+            images: Default::default(),
             piece_textures: Default::default(),
             collision_shapes: Default::default(),
             collision_layers: Default::default(),

@@ -25,8 +25,6 @@ fn get_lua_instance() -> Lua {
 pub fn run_game_editor(project_path: &Path) {
     // initialize game resources
     let mut resource_cell = RefCell::new(GameResources::<
-        Color,
-        Rectangle,
         Vector2,
         ConvexHull<Vector2>,
         Texture2D,

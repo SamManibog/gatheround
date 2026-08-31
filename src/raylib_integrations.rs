@@ -2,24 +2,21 @@ use std::path::PathBuf;
 
 use raylib::{
     RaylibHandle, RaylibThread,
-    drawing::{RaylibDraw, RaylibDrawHandle, RaylibScissorModeExt, RaylibTextureModeExt},
-    ffi::{Color, MouseButton, Rectangle, Vector2},
-    rgui::RaylibGuiControls,
+    drawing::{RaylibDraw, RaylibScissorModeExt, RaylibTextureModeExt},
+    ffi::{Color, Rectangle, Vector2},
     text::{Font, RaylibFont},
     texture::{Image, RaylibTexture2D, RenderTexture2D, Texture2D},
 };
 
 use crate::{
     color::IColor,
-    ecs::DenseComponentManager,
-    editor::EditorSaveState,
-    geometry::{ConvexHull, IRect, IVec2},
+    geometry::{IRect, IVec2},
     piece_components::{
-        Alignment, ImageInfo, ImageTransform, PatternInfo, PatternType, TextboxInfo, TextureInfo,
+        Alignment, ImageTransform, PatternInfo, PatternType, TextboxInfo, TextureInfo,
         VisualComponent, VisualInfo,
     },
     renderer::IRenderer,
-    resources::{VisualComponentProvider},
+    resources::VisualComponentProvider,
 };
 
 mod uiconsts {
@@ -182,18 +179,16 @@ impl<'a> RaylibRenderer<'a> {
     pub fn draw_textbox<C: IColor, R: IRect>(
         &mut self,
         textbox: &TextboxInfo<C, R>,
-        visual_component_provider: VisualComponentProvider<'_, PathBuf, Texture2D>,
+        visual_component_provider: &mut VisualComponentProvider<'_, Font, Texture2D>,
         transform: &ImageTransform<Vector2>,
         target: &mut RenderTexture2D,
     ) {
         // attempt to get the font, return if font could not be found
-        let font = if let Ok(f) = self.rl.load_font_ex(
-            &self.thread,
-            &visual_component_provider
-                .get_font(&textbox.font_family)
-                .to_string_lossy(),
-            (textbox.font_size.unwrap_or(32) as f32 * transform.scale) as i32,
-            Some(&textbox.text),
+        let font = if let Some(f) = visual_component_provider.get_or_load_font(
+            self,
+            &textbox.font_family,
+            textbox.font_size.unwrap_or(32),
+            &textbox.text,
         ) {
             f
         } else {
@@ -281,17 +276,16 @@ impl<'a> RaylibRenderer<'a> {
         };
 
         // load font in correct size
-        let font = self
-            .rl
-            .load_font_ex(
-                &self.thread,
-                &visual_component_provider
-                    .get_font(&textbox.font_family)
-                    .to_string_lossy(),
-                font_size as i32,
-                Some(&textbox.text),
-            )
-            .unwrap_or(font);
+        let font = if let Some(f) = visual_component_provider.get_or_load_font(
+            self,
+            &textbox.font_family,
+            textbox.font_size.unwrap_or(32),
+            &textbox.text,
+        ) {
+            f
+        } else {
+            return;
+        };
 
         // determine starting y position
         let text_height = font_size + line_increment * (lines.len() - 1) as f32;
@@ -633,13 +627,13 @@ impl<'a> RaylibRenderer<'a> {
 
 impl<'a> IRenderer for RaylibRenderer<'a> {
     type Image = Texture2D;
-    type Font = PathBuf;
+    type Font = Font;
 
     fn compile_visual<C, R, V>(
         &mut self,
         visual: &VisualInfo<C, R, V>,
         magnification_dimensions: V,
-        visual_component_provider: VisualComponentProvider<'_, Self::Font, Self::Image>,
+        mut visual_component_provider: VisualComponentProvider<'_, Self::Font, Self::Image>,
     ) -> TextureInfo<Self::Image>
     where
         C: IColor,
@@ -657,17 +651,19 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
                     }
 
                     VisualComponent::Image(i) => {
-                        let image_texture = visual_component_provider.get_image(&i.path);
+                        if let Some(image_texture) =
+                            visual_component_provider.get_or_load_image(self, &i.path)
+                        {
+                            let r = Rectangle::from_position_dimension(
+                                i.transform.offset,
+                                Vector2::from_xy(
+                                    image_texture.width as f32,
+                                    image_texture.height as f32,
+                                ),
+                            );
 
-                        let r = Rectangle::from_position_dimension(
-                            i.transform.offset,
-                            Vector2::from_xy(
-                                image_texture.width as f32,
-                                image_texture.height as f32,
-                            ),
-                        );
-
-                        rect = Rectangle::bounding(&rect, &r);
+                            rect = Rectangle::bounding(&rect, &r);
+                        }
                     }
 
                     VisualComponent::Pattern(p) => rect = Rectangle::bounding(&rect, &p.rect),
@@ -726,29 +722,32 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
                 VisualComponent::Textbox(t) => {
                     self.draw_textbox(
                         t,
-                        visual_component_provider,
+                        &mut visual_component_provider,
                         &texture_transform,
                         &mut texture,
                     );
                     self.draw_textbox(
                         t,
-                        visual_component_provider,
+                        &mut visual_component_provider,
                         &magnified_transform,
                         &mut texture_magnified,
                     );
                 }
 
                 VisualComponent::Image(i) => {
-                    self.draw_texture(
-                        &texture_transform.transform_other(&i.transform),
-                        &visual_component_provider.get_image(&i.path),
-                        &mut texture,
-                    );
-                    self.draw_texture(
-                        &magnified_transform.transform_other(&i.transform),
-                        &visual_component_provider.get_image(&i.path),
-                        &mut texture_magnified,
-                    );
+                    if let Some(image) = visual_component_provider.get_or_load_image(self, &i.path)
+                    {
+                        self.draw_texture(
+                            &texture_transform.transform_other(&i.transform),
+                            &image,
+                            &mut texture,
+                        );
+                        self.draw_texture(
+                            &magnified_transform.transform_other(&i.transform),
+                            &image,
+                            &mut texture_magnified,
+                        );
+                    }
                 }
 
                 VisualComponent::Pattern(p) => {
@@ -764,15 +763,21 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
         }
     }
 
-    fn load_font(&mut self, path: &std::path::Path) -> Result<PathBuf, String> {
-        // check if font is valid
-        match self.rl.load_font(&self.thread, &path.to_string_lossy()) {
-            // just pass the path, fonts need to be reloaded based on relevant characters and
-            // specialized sizing
-            Ok(_) => Ok(path.to_path_buf()),
-
+    fn load_font(
+        &mut self,
+        path: &std::path::Path,
+        size: u32,
+        characters: &str,
+    ) -> Result<Self::Font, String> {
+        match self.rl.load_font_ex(
+            &self.thread,
+            &path.to_string_lossy(),
+            size as i32,
+            Some(characters),
+        ) {
+            Ok(f) => Ok(f),
             Err(_) => Err(format!(
-                "Failed to load image from '{}'",
+                "Failed to load font from '{}'",
                 path.to_string_lossy()
             )),
         }

@@ -27,7 +27,7 @@ pub trait IRenderer {
 
     /// loads a font into an acceptable format, given a path to its font file
     /// return a result with a message for an error
-    fn load_font(&mut self, path: &Path) -> Result<Self::Font, String>;
+    fn load_font(&mut self, path: &Path, size: u32, characters: &str) -> Result<Self::Font, String>;
 
     /// loads an image into an acceptable format
     /// return a result with a message for an error
