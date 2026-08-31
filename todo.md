@@ -1,0 +1,104 @@
+# To Do List
+ - Central State
+   - piece types
+     - cards (configurable dimensions, different face types, mix and match)
+       - symbolic face (all may be configured)
+         - center
+         - corners
+         - edges
+         - background color
+       - text face (all may be configured)
+         - title + color
+         - body + color
+         - background color
+       - back face (choose one option)
+         - solid
+         - checkered, configurable unit size
+         - striped, configurable angle
+         - dotted
+         - custom image
+     - misc
+       - flipped and non-flipped state (some are the same front and back, like chess pieces)
+       - some pre-defined examples
+         - chess pieces
+       - full-custom
+         - image
+         - collisionshape
+         - snap points
+           - snap target - a point that snap objects can snap to
+           - snap object - a point that snaps to snap targets
+   - piece transformations
+     - offset
+       - none - force a piece to a specific location
+       - free - move anywhere
+       - constrained - any combination of the following constraints:
+         - within specific global areas
+         - force to snap ontop of certain pieces
+         - force to snap ontop of global points
+     - rotation
+       - none - prevent rotation
+       - snapping - rotate within certain increments (ex 45 or 90 degrees)
+       - constrained - within a fixed list of angles
+     - flipping
+       - none - prevent flipping
+       - mirror - mirror texture on vertical axis (horizontal mirror is accomplished by mirror + 180deg rotation)
+       - double sided - change textures when flipping
+   - piece stacks
+     - add pieces to top/bottom
+     - move pieces that are on the top
+       - keep pressing pickup to keep taking from the stack
+       - double tap + hold to put down the stack
+     - move entire stack
+       - hold to pick up the entire stack
+   - global HUD elements
+     - stopwatch (with label)
+     - countdown (with label)
+     - custom label: Value readouts (ex for player score, turn numbers)
+   - global stage queue has the following stages which can be a single of the ones below
+     - each of the following screens can have custom code for specific actions
+     - each screen can be given its own lua-exposed name and metadata
+     - screens can be assign different input modes/layouts to each player, which must be one of the following
+       - form input - write and submit inputs (discrete sending of information in batches), elements include:
+         - labels (no input)
+         - text input
+         - yes/no input
+         - number input
+         - slider input
+         - option/radio-based selection
+         - whiteboard/draw input
+       - continuous input - events are recieved continuously, elements include:
+         - board control buttons
+           - mouse (required)
+           - pickup (required)
+           - orientation slider (required if ANY element can be rotated)
+         - custom 1-shot buttons
+         - custom toggle buttons
+     - splash screen - show a screen for a set amount of time
+     - ready-up screen - show a screen and only close when (designated) players click ready
+     - board screen - show one of the game boards
+     - game over screen
+   - piece groupings
+     - built-in groups are surrounded by brackets[]
+     - custom groups cannot contain brackets
+     - no group title may have invisible or whitespace characters, except space
+     - group types
+       - collision - prevent certain pieces from overlapping
+       - layer - draw pieces on specific canvas layers
+       - snap - control game piece snapping
+       - stack - pieces of the same group can be stacked onto each other
+       - custom - for custom lua rules, don't do anything without lua configurations
+ - HTTPS Server
+ - Game editor
+   - game settings/rules configuration
+   - intitial game layout/state
+   - Piece editor
+   - Lua Binding for custom rules, state modification
+     - pipeline
+       - actions get verified/validated using custom lua code
+       - successful actions get handled by lua code again, which may spawn more events
+   - serialization
+     - rules
+     - pieces
+     - board layout
+     - lua binding
+ - Improve convenience of client device setup
