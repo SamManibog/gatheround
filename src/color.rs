@@ -1,3 +1,5 @@
+use mlua::Table;
+
 pub trait IColor: Clone {
     fn r(&self) -> u8;
     fn g(&self) -> u8;
@@ -9,4 +11,40 @@ pub trait IColor: Clone {
     }
 
     fn from_rgba(r: u8, g: u8, b: u8, a: u8) -> Self;
+}
+
+/// creates a channel value from a lua value, saturating at u8 buonds
+fn channel_from_lua(value: &mlua::Value) -> Result<u8, String> {
+    if let mlua::Value::Integer(int) = value {
+        Ok((*int).clamp(u8::MIN as i64, u8::MAX as i64) as u8)
+    } else if let mlua::Value::Number(float) = value {
+        Ok((float.clamp(0.0, 1.0) * u8::MAX as f64).round() as u8)
+    } else {
+        Err("Non numeric channel field.".to_string())
+    }
+}
+
+/// attempt to get a color from a lua table
+pub fn color_from_lua_table<C: IColor>(table: &Table) -> Result<C, String> {
+    let r = match table.raw_get("r") {
+        Ok(val) => val,
+        Err(msg) => return Err(format!("Invalid r channel: {msg}")),
+    };
+
+    let g = match table.raw_get("g") {
+        Ok(val) => val,
+        Err(msg) => return Err(format!("Invalid g channel: {msg}")),
+    };
+
+    let b = match table.raw_get("b") {
+        Ok(val) => val,
+        Err(msg) => return Err(format!("Invalid b channel: {msg}")),
+    };
+
+    let a = match table.raw_get("a") {
+        Ok(val) => val,
+        Err(msg) => return Err(format!("Invalid a channel: {msg}")),
+    };
+
+    Ok(Self::from_rgba(r, g, b, a))
 }

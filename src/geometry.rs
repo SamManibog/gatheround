@@ -1,4 +1,8 @@
-use std::{cmp::Ordering, ops::Deref};
+use std::cmp::Ordering;
+
+use mlua::{Table, Value};
+
+use crate::lua::{FromLuaTable, FromLuaValue};
 
 pub const GJK_MAX_ITERATIONS: u32 = 64;
 
@@ -17,6 +21,27 @@ macro_rules! impl_as_f32 {
     };
 }
 impl_as_f32!(i8, u8, i16, u16, i32, u32, i64, u64, isize, usize, f64);
+
+/// attempt to instance from a lua table
+pub fn vec2_from_lua_table<V: IVec2>(table: &Table) -> Result<V, String> {
+    let x = match table.raw_get::<f64>("x") {
+        Ok(value) => value,
+        Err(_) => match table.raw_get::<f64>(1) {
+            Ok(value) => value,
+            Err(_) => return Err("Invalid x field.".to_string()),
+        },
+    };
+
+    let y = match table.raw_get::<f64>("y") {
+        Ok(value) => value,
+        Err(_) => match table.raw_get::<f64>(2) {
+            Ok(value) => value,
+            Err(_) => return Err("Invalid y field.".to_string()),
+        },
+    };
+
+    Ok(V::from_xy(x as f32, y as f32))
+}
 
 /// trait representing 2d vectors
 pub trait IVec2: Sized + Clone + Copy {
@@ -139,6 +164,30 @@ impl IVec2 for (f32, f32) {
     fn y(&self) -> f32 {
         self.1
     }
+}
+
+/// attempt to instance from a lua table
+pub fn rect_from_lua_table<R: IRect>(table: &Table) -> Result<R, String> {
+    let position = vec2_from_lua_table::<(f32, f32)>(table)?;
+
+    let width = match table.raw_get::<f64>("width") {
+        Ok(value) => value,
+        Err(_) => {
+            return Err("Invalid width field.".to_string());
+        }
+    };
+
+    let height = match table.raw_get::<f64>("height") {
+        Ok(value) => value,
+        Err(_) => {
+            return Err("Invalid height field.".to_string());
+        }
+    };
+
+    Ok(R::from_position_dimension(
+        position,
+        (width as f32, height as f32),
+    ))
 }
 
 pub trait IRect: Sized + Clone + Copy {
@@ -561,10 +610,19 @@ pub trait IRect: Sized + Clone + Copy {
 }
 
 /// a transform made up of an offset and angle
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct Transform<V: IVec2> {
     pub offset: V,
     pub angle: f32,
+}
+
+impl<V: IVec2> Default for Transform<V> {
+    fn default() -> Self {
+        Self {
+            offset: V::from_xy(0.0, 0.0),
+            angle: 0.0,
+        }
+    }
 }
 
 impl<V: IVec2> Transform<V> {
@@ -586,37 +644,73 @@ impl<V: IVec2> Transform<V> {
     }
 }
 
+impl<V: IVec2> FromLuaTable for Transform<V> {
+    fn try_from_lua_table(table: &Table) -> Result<Self, String> {
+        let offset = vec2_from_lua_table(table)?;
+
+        let angle = match table.raw_get::<f64>("angle") {
+            Ok(value) => value,
+            Err(_) => {
+                return Err("Invalid angle field.".to_string());
+            }
+        } as f32;
+
+        Ok(Self { offset, angle })
+    }
+}
+
+impl<V: IVec2> FromLuaValue for Transform<V> {
+    fn try_from_lua_value(value: &mlua::prelude::LuaValue) -> Result<Self, String> {
+        match value {
+            Value::Table(table) => Self::try_from_lua_table(&table),
+            _ => Err(format!("non-table value."))
+        }
+    }
+}
+
 /// trait representing convex shapes for gjk algorithm
-pub trait IConvexShape<V: IVec2> {
+pub trait IConvexShape {
     /// get the furthest point in the given direction
-    fn furthest_point(&self, direction: V) -> V;
+    fn furthest_point<V: IVec2>(&self, direction: V) -> V;
 }
 
-impl<V: IVec2> IConvexShape<V> for &dyn IConvexShape<V> {
-    fn furthest_point(&self, direction: V) -> V {
-        <dyn IConvexShape<V>>::furthest_point(self, direction)
+#[derive(Debug, Clone)]
+pub struct TransformedConvexShape<S: IConvexShape, V: IVec2> {
+    pub shape: S,
+    pub transform: Transform<V>,
+}
+
+impl<V: IVec2, S: IConvexShape> TransformedConvexShape<S, V> {
+    pub fn new(shape: S, transform: Transform<V>) -> Self {
+        Self { shape, transform }
     }
 }
 
-impl<V: IVec2> IConvexShape<V> for Box<dyn IConvexShape<V>> {
-    fn furthest_point(&self, direction: V) -> V {
-        <dyn IConvexShape<V>>::furthest_point(self.deref(), direction)
+impl<V: IVec2, S: IConvexShape> IConvexShape for TransformedConvexShape<S, V> {
+    fn furthest_point<V2: IVec2>(&self, direction: V2) -> V2 {
+        let local_direction = direction.rotated(-self.transform.angle);
+
+        let local_point = self.shape.furthest_point(local_direction);
+
+        local_point
+            .rotated(self.transform.angle)
+            .add(self.transform.offset)
     }
 }
 
-pub struct TransformedConvexShape<'a, V: IVec2, S: IConvexShape<V>> {
+pub struct TransformedConvexShapeRef<'a, S: IConvexShape, V: IVec2> {
     pub shape: &'a S,
     pub transform: &'a Transform<V>,
 }
 
-impl<'a, V: IVec2, S: IConvexShape<V>> TransformedConvexShape<'a, V, S> {
+impl<'a, V: IVec2, S: IConvexShape> TransformedConvexShapeRef<'a, S, V> {
     pub fn new(shape: &'a S, transform: &'a Transform<V>) -> Self {
         Self { shape, transform }
     }
 }
 
-impl<V: IVec2, S: IConvexShape<V>> IConvexShape<V> for TransformedConvexShape<'_, V, S> {
-    fn furthest_point(&self, direction: V) -> V {
+impl<V: IVec2, S: IConvexShape> IConvexShape for TransformedConvexShapeRef<'_, S, V> {
+    fn furthest_point<V2: IVec2>(&self, direction: V2) -> V2 {
         let local_direction = direction.rotated(-self.transform.angle);
 
         let local_point = self.shape.furthest_point(local_direction);
@@ -628,36 +722,74 @@ impl<V: IVec2, S: IConvexShape<V>> IConvexShape<V> for TransformedConvexShape<'_
 }
 
 /// a shape that can collide with others or points
-pub struct CollisionShape<S: IConvexShape<V>, V: IVec2> {
-    pub convex_shapes: Vec<(S, Transform<V>)>,
+#[derive(Debug, Clone)]
+pub struct CollisionShape<S: IConvexShape>(pub Vec<S>);
+
+impl<S: IConvexShape + FromLuaTable> FromLuaTable for CollisionShape<S> {
+    fn try_from_lua_table(table: &Table) -> Result<Self, String> {
+        let mut convex_shapes = Vec::new();
+
+        // try as array
+        for (index, table_result) in table.sequence_values::<Table>().enumerate() {
+            if let Ok(table) = table_result {
+                match S::try_from_lua_table(&table) {
+                    Ok(shape) => {
+                        convex_shapes.push(shape);
+                    }
+
+                    Err(msg) => {
+                        return Err(format!(
+                            "Invalid convex shape at index {}: {msg}",
+                            index + 1
+                        ));
+                    }
+                }
+            } else {
+                return Err(format!(
+                    "Invalid convex shape at index {}: non-table value.",
+                    index + 1
+                ));
+            }
+        }
+
+        // try as singular shape
+        if convex_shapes.is_empty() {
+            convex_shapes.push(S::try_from_lua_table(table)?);
+        }
+
+        Ok(Self(convex_shapes))
+    }
 }
 
-impl<S: IConvexShape<V>, V: IVec2> Default for CollisionShape<S, V> {
+impl<S: IConvexShape + FromLuaTable> FromLuaValue for CollisionShape<S> {
+    fn try_from_lua_value(value: &mlua::prelude::LuaValue) -> Result<Self, String> {
+        match value {
+            Value::Table(table) => Self::try_from_lua_table(&table),
+            _ => Err(format!("non-table value."))
+        }
+    }
+}
+
+
+impl<S: IConvexShape> Default for CollisionShape<S> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<S: IConvexShape<V>, V: IVec2> CollisionShape<S, V> {
+impl<S: IConvexShape> CollisionShape<S> {
     /// creates an empty collision shape
     pub fn new() -> Self {
-        Self {
-            convex_shapes: Vec::new(),
-        }
+        Self(Vec::new())
     }
 
     /// gets the furthest point in the given direction
-    pub fn furthest_point(&self, direction: V) -> V {
+    pub fn furthest_point<V: IVec2>(&self, direction: V) -> V {
         let mut max_dot = f32::MIN;
         let mut furthest = V::from_xy(0.0, 0.0);
 
-        for (shape, transform) in &self.convex_shapes {
-            let tshape = TransformedConvexShape {
-                shape: shape,
-                transform: &transform,
-            };
-
-            let temp = tshape.furthest_point(direction);
+        for shape in &self.0 {
+            let temp = shape.furthest_point(direction);
             let temp_dot = temp.dot(direction);
             if temp_dot > max_dot {
                 max_dot = temp_dot;
@@ -670,13 +802,15 @@ impl<S: IConvexShape<V>, V: IVec2> CollisionShape<S, V> {
 
     /// gets the furthest point in the given direction, assuming this shape has been rotated by
     /// the given angle (in radians)
-    pub fn furthest_point_rotated(&self, angle: f32, direction: V) -> V {
+    pub fn furthest_point_rotated<V: IVec2>(&self, angle: f32, direction: V) -> V {
         let new_direction = direction.rotated(angle);
         self.furthest_point(new_direction).rotated(-angle)
     }
 
     /// creates an aabb from this shape
     pub fn aabb<R: IRect>(&mut self) -> R {
+        type V = (f32, f32);
+
         let min_x = self.furthest_point(V::from_xy(-1.0, 0.0)).x();
         let min_y = self.furthest_point(V::from_xy(0.0, -1.0)).y();
         let max_x = self.furthest_point(V::from_xy(1.0, 0.0)).x();
@@ -687,6 +821,8 @@ impl<S: IConvexShape<V>, V: IVec2> CollisionShape<S, V> {
 
     /// creates an aabb from this shape with the shape tranformed by the given rotation in radians
     pub fn aabb_rotated<R: IRect>(&mut self, angle: f32) -> R {
+        type V = (f32, f32);
+
         let min_x = self
             .furthest_point_rotated(angle, V::from_xy(-1.0, 0.0))
             .x();
@@ -700,21 +836,17 @@ impl<S: IConvexShape<V>, V: IVec2> CollisionShape<S, V> {
     }
 
     /// check if this shape intersects with another, given each shape's transform
-    pub fn intersects(
+    pub fn intersects<V: IVec2>(
         &self,
         transform: &Transform<V>,
         other: &Self,
         other_transform: &Transform<V>,
     ) -> bool {
-        // perform expensive calculations
-        for (hull, hull_transform) in &self.convex_shapes {
-            for (other_hull, other_hull_transform) in &other.convex_shapes {
-                let total_transform = hull_transform.transformed(transform);
-                let other_total_transform = other_hull_transform.transformed(other_transform);
-
+        for hull in &self.0 {
+            for other_hull in &other.0 {
                 // transform convex hulls
-                let tshape = TransformedConvexShape::new(hull, &total_transform);
-                let other_tshape = TransformedConvexShape::new(other_hull, &other_total_transform);
+                let tshape = TransformedConvexShapeRef::new(hull, &transform);
+                let other_tshape = TransformedConvexShapeRef::new(other_hull, &other_transform);
 
                 // check intersection of hulls
                 if gjk_intersects(&tshape, &other_tshape) {
@@ -728,12 +860,9 @@ impl<S: IConvexShape<V>, V: IVec2> CollisionShape<S, V> {
 }
 
 /// uses the gjk algorithm to determine if two covexshapes are intersecting
-pub fn gjk_intersects<V: IVec2, S: IConvexShape<V>, T: IConvexShape<V>>(
-    shape1: &S,
-    shape2: &T,
-) -> bool {
+pub fn gjk_intersects<S: IConvexShape, T: IConvexShape>(shape1: &S, shape2: &T) -> bool {
     //let mut direction = shape1.center() - shape2.center();
-    let mut direction = V::from_xy(1.0, 0.0);
+    let mut direction = <(f32, f32)>::from_xy(1.0, 0.0);
     let mut simplex = vec![minowski_support_2d(shape1, shape2, direction)];
 
     //support point for vector in direction of origin
@@ -792,7 +921,7 @@ fn gjk_handle_simplex_2d<V: IVec2>(simplex: &mut Vec<V>, direction: &mut V) -> b
 }
 
 /// gets the minowski support point in the given direction for two convex shapes
-fn minowski_support_2d<V: IVec2, S: IConvexShape<V>, T: IConvexShape<V>>(
+fn minowski_support_2d<V: IVec2, S: IConvexShape, T: IConvexShape>(
     s1: &S,
     s2: &T,
     direction: V,
@@ -861,8 +990,8 @@ impl<V: IVec2> ConvexHull<V> {
     }
 }
 
-impl<V1: IVec2, V2: IVec2> IConvexShape<V2> for ConvexHull<V1> {
-    fn furthest_point(&self, direction: V2) -> V2 {
+impl<V: IVec2> IConvexShape for ConvexHull<V> {
+    fn furthest_point<V2: IVec2>(&self, direction: V2) -> V2 {
         V2::from_other(self.0[self.furthest_point_index(direction)])
     }
 }

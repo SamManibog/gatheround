@@ -349,9 +349,9 @@ impl<'a> RaylibRenderer<'a> {
                 return;
             }
 
-            PatternType::Checkered => self.make_checkers(&pattern, &transform),
-            PatternType::Striped => self.make_stripes(&pattern, &transform),
-            PatternType::Dotted => self.make_dots(&pattern, &transform),
+            PatternType::Checkers => self.make_checkers(&pattern, &transform),
+            PatternType::Stripes => self.make_stripes(&pattern, &transform),
+            PatternType::Dots => self.make_dots(&pattern, &transform),
         };
         if pattern_texture.is_none() {
             return;
@@ -626,15 +626,15 @@ impl<'a> RaylibRenderer<'a> {
 }
 
 impl<'a> IRenderer for RaylibRenderer<'a> {
-    type Image = Texture2D;
+    type Texture = Texture2D;
     type Font = Font;
 
     fn compile_visual<C, R, V>(
         &mut self,
         visual: &VisualInfo<C, R, V>,
         magnification_dimensions: V,
-        mut visual_component_provider: VisualComponentProvider<'_, Self::Font, Self::Image>,
-    ) -> TextureInfo<Self::Image>
+        mut visual_component_provider: VisualComponentProvider<'_, Self::Font, Self::Texture>,
+    ) -> Result<TextureInfo<Self::Texture>, String>
     where
         C: IColor,
         R: IRect,
@@ -757,10 +757,10 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
             }
         }
 
-        TextureInfo {
+        Ok(TextureInfo {
             texture: unsafe { Texture2D::from_raw(texture.to_raw().texture) },
             texture_magnified: unsafe { Texture2D::from_raw(texture_magnified.to_raw().texture) },
-        }
+        })
     }
 
     fn load_font(

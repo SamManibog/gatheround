@@ -1,17 +1,16 @@
 use std::{
-    cell::RefCell,
     collections::{BTreeMap, HashMap},
     marker::PhantomData,
     path::{Path, PathBuf},
-    str::FromStr,
 };
 
 use roaring::RoaringBitmap;
 
 use crate::{
-    ecs::{Entity, NamedEntityManager, ResourceManager},
-    geometry::{CollisionShape, IConvexShape, IVec2},
-    piece_components::TextureInfo,
+    color::IColor,
+    ecs::{Entity, ResourceManager},
+    geometry::{IRect, IVec2},
+    piece_components::{TextureInfo, VisualInfo},
     renderer::IRenderer,
 };
 
@@ -100,7 +99,7 @@ impl<'a, F, I> VisualComponentProvider<'a, F, I> {
         fonts.get_font(path, size, characters)
     }
 
-    pub fn get_or_load_image<R: IRenderer<Image = I>>(
+    pub fn get_or_load_image<R: IRenderer<Texture = I>>(
         &mut self,
         renderer: &mut R,
         path: &String,
@@ -150,12 +149,13 @@ impl<F> FontManager<F> {
         Self::default()
     }
 
-    /// loads a font, returning true on success or if the font was already loaded
-    pub fn load_font<R: IRenderer<Font = F>>(
+    /// batch loads multiple font sizes at once
+    /// returns true if all sizes could be loaded
+    pub fn batch_load_font<R: IRenderer<Font = F>>(
         &mut self,
         renderer: &mut R,
         path: &String,
-        size: u32,
+        sizes: &[u32],
         characters: &str,
     ) -> bool {
         let path_result = PathBuf::try_from(path);
@@ -171,10 +171,6 @@ impl<F> FontManager<F> {
                 if entry.charset.insert(c as u32) {
                     needs_update = true;
                 }
-            }
-
-            if !needs_update && entry.sizes.contains_key(&size) {
-                return true;
             }
 
             let characters: String = entry
@@ -194,30 +190,59 @@ impl<F> FontManager<F> {
             }
 
             // insert the new font size
-            let font_result = renderer.load_font(&path_buf, size, &characters);
-            if font_result.is_err() {
-                return false;
+            for size in sizes {
+                if entry.sizes.contains_key(size) {
+                    continue;
+                }
+
+                let font_result = renderer.load_font(&path_buf, *size, &characters);
+                if font_result.is_err() {
+                    return false;
+                }
+                let font = font_result.unwrap();
+                entry.sizes.insert(*size, font);
             }
-            let font = font_result.unwrap();
-            entry.sizes.insert(size, font);
 
             return true;
         }
 
         // completely new font entry
-        let font_result = renderer.load_font(&path_buf, size, characters);
-        if font_result.is_err() {
-            return false;
+        let mut temp_map = BTreeMap::new();
+        for size in sizes {
+            let font_result = renderer.load_font(&path_buf, *size, characters);
+            if font_result.is_err() {
+                if !temp_map.is_empty() {
+                    let entry = FontEntry {
+                        charset: RoaringBitmap::from_iter(characters.chars().map(|c| c as u32)),
+                        sizes: temp_map,
+                    };
+                    self.fonts.insert(path.clone(), entry);
+                }
+
+                return false;
+            }
+            temp_map.insert(*size, font_result.unwrap());
         }
-        let font = font_result.unwrap();
 
         let entry = FontEntry {
             charset: RoaringBitmap::from_iter(characters.chars().map(|c| c as u32)),
-            sizes: BTreeMap::from([(size, font)]),
+            sizes: temp_map,
         };
         self.fonts.insert(path.clone(), entry);
 
         true
+    }
+
+    /// loads a single font, returning true on success or if the font was already loaded
+    pub fn load_font<R: IRenderer<Font = F>>(
+        &mut self,
+        renderer: &mut R,
+        path: &String,
+        size: u32,
+        characters: &str,
+    ) -> bool {
+        let sizes = [size; 1];
+        self.batch_load_font(renderer, path, &sizes, characters)
     }
 
     pub fn get_font(&self, path: &String, size: u32, characters: &str) -> Option<&F> {
@@ -238,56 +263,183 @@ impl<F> FontManager<F> {
 pub struct TextureEntityMarker;
 pub type TextureEntity = Entity<TextureEntityMarker>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CollisionShapeEntityMarker;
-pub type CollisionShapeEntity = Entity<CollisionShapeEntityMarker>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CollisionLayerEntityMarker;
-pub type CollisionLayerEntity = Entity<CollisionLayerEntityMarker>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DrawLayerEntityMarker;
-pub type DrawLayerEntity = Entity<DrawLayerEntityMarker>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PieceCategoryEntityMarker;
-pub type PieceCategoryEntity = Entity<PieceCategoryEntityMarker>;
-
-/// persistent global game components
-pub struct GameResources<V: IVec2, S: IConvexShape<V>, T, F, I> {
+/// texture resources
+pub struct TextureManager<T, F> {
     /// loaded fonts to speed up font rendering capabilities
-    pub fonts: FontManager<F>,
+    fonts: FontManager<F>,
 
     /// loaded images to speed up image texture generation capabilities
-    pub images: HashMap<String, I>,
+    images: HashMap<String, T>,
 
-    /// textures rendered from piece visuals
-    pub piece_textures: ResourceManager<TextureEntity, TextureInfo<T>>,
-
-    /// collision shape resources that may be combined for use on piece faces
-    pub collision_shapes: ResourceManager<CollisionLayerEntity, CollisionShape<S, V>>,
-
-    /// the names of the collision layers for this game
-    pub collision_layers: NamedEntityManager<CollisionLayerEntity>,
-
-    /// the names of the draw layers for this game
-    pub draw_layers: NamedEntityManager<DrawLayerEntity>,
-
-    /// the special piece categorizations for this game
-    pub piece_categories: NamedEntityManager<PieceCategoryEntity>,
+    /// textures
+    textures: ResourceManager<TextureEntity, TextureInfo<T>>,
 }
 
-impl<V: IVec2, S: IConvexShape<V>, T, F, I> Default for GameResources<V, S, T, F, I> {
+impl<T, F> Default for TextureManager<T, F> {
     fn default() -> Self {
         Self {
             fonts: Default::default(),
             images: Default::default(),
-            piece_textures: Default::default(),
-            collision_shapes: Default::default(),
-            collision_layers: Default::default(),
-            draw_layers: Default::default(),
-            piece_categories: Default::default(),
+            textures: Default::default(),
         }
     }
 }
+
+impl<T, F> TextureManager<T, F> {
+    /// attempts to create a new texture, returning its entity on success
+    /// textures may be assigned an optional name that can be used to identify it
+    pub fn load_texture<C, R, V, IR>(
+        &mut self,
+        name: Option<String>,
+        visual: &VisualInfo<C, R, V>,
+        magnification_dimensions: V,
+        renderer: &mut IR,
+    ) -> Result<TextureEntity, String>
+    where
+        C: IColor,
+        R: IRect,
+        V: IVec2,
+        IR: IRenderer<Font = F, Texture = T>,
+    {
+        let provider = VisualComponentProvider {
+            fonts: &mut self.fonts,
+            images: &mut self.images,
+            marker: PhantomData,
+        };
+
+        let texture = renderer.compile_visual(visual, magnification_dimensions, provider)?;
+
+        if let Some(n) = name {
+            if let Ok(entity) = self.textures.add_named(n.clone(), texture) {
+                Ok(entity)
+            } else {
+                Err(format!("Texture with name '{n}' already exists."))
+            }
+        } else {
+            Ok(self.textures.add(texture))
+        }
+    }
+
+    /// removes a texture if it exists, returning it and its name
+    pub fn remove_texture(
+        &mut self,
+        entity: TextureEntity,
+    ) -> Option<(Option<String>, TextureInfo<T>)> {
+        self.textures.remove(entity)
+    }
+
+    /// removes a texture by its name if it exists
+    pub fn remove_texture_by_name(&mut self, name: &String) -> Option<TextureInfo<T>> {
+        self.textures.remove_by_name(name)
+    }
+
+    /// checks if a texture with the given entity exists
+    pub fn contains_texture(&self, entity: TextureEntity) -> bool {
+        self.textures.contains(entity)
+    }
+
+    /// checks if a texture with the given name exists
+    pub fn contains_texture_name(&self, name: &String) -> bool {
+        self.textures.contains_name(name)
+    }
+
+    /// gets a texture by its entity
+    pub fn get_texture(&self, entity: TextureEntity) -> Option<&TextureInfo<T>> {
+        self.textures.get(entity)
+    }
+
+    /// gets a mutable texture by its entity
+    pub fn get_texture_mut(&mut self, entity: TextureEntity) -> Option<&mut TextureInfo<T>> {
+        self.textures.get_mut(entity)
+    }
+
+    /// gets a reference to the texture by name
+    pub fn get_texture_by_name(&self, name: &String) -> Option<&TextureInfo<T>> {
+        self.textures.get_by_name(name)
+    }
+
+    /// gets a mutable reference to the texture by name
+    pub fn get_texture_mut_by_name(&mut self, name: &String) -> Option<&mut TextureInfo<T>> {
+        self.textures.get_mut_by_name(name)
+    }
+
+    /// gets the name of the entity
+    pub fn get_texture_name(&self, entity: TextureEntity) -> Option<&String> {
+        self.textures.get_name(entity)
+    }
+
+    /// gets the entity by the given name
+    pub fn get_texture_entity(&self, name: &String) -> Option<TextureEntity> {
+        self.textures.get_entity(name)
+    }
+
+    /// returns an iterator over all entities, names, and textures
+    pub fn iter(&self) -> impl Iterator<Item = (TextureEntity, Option<&String>, &TextureInfo<T>)> {
+        self.textures.iter()
+    }
+
+    /// returns an iterator over entities and their names
+    pub fn identifier_iter(&self) -> impl Iterator<Item = (TextureEntity, Option<&String>)> {
+        self.textures.identifier_iter()
+    }
+
+    /// returns an iterator over all textures
+    pub fn texture_iter(&self) -> impl Iterator<Item = &TextureInfo<T>> {
+        self.textures.resource_iter()
+    }
+
+    /// returns a mutable iterator over all textures
+    pub fn texture_iter_mut(&mut self) -> impl Iterator<Item = &mut TextureInfo<T>> {
+        self.textures.resource_iter_mut()
+    }
+
+    /// loads a font, returning true on successful load
+    pub fn load_font<R: IRenderer<Font = F>>(
+        &mut self,
+        renderer: &mut R,
+        path: &String,
+        sizes: &[u32],
+        characters: &str,
+    ) -> bool {
+        self.fonts
+            .batch_load_font(renderer, path, sizes, characters)
+    }
+
+    /// checks if a font with the given pathis loaded
+    pub fn is_font_loaded(&self, path: &String, size: u32, characters: &str) -> bool {
+        self.fonts.get_font(path, size, characters).is_some()
+    }
+
+    /// clears the cached fonts
+    pub fn clear_font_cache(&mut self) {
+        self.fonts = Default::default();
+    }
+
+    /// loads an image, returning true on successful load
+    pub fn load_image<R: IRenderer<Texture = T>>(
+        &mut self,
+        renderer: &mut R,
+        path: &String,
+    ) -> bool {
+        let path_buf = PathBuf::from(path);
+        let image = if let Ok(i) = renderer.load_image(&path_buf) {
+            i
+        } else {
+            return false;
+        };
+
+        self.images.insert(path.clone(), image);
+        true
+    }
+
+    /// checks if an image is loaded
+    pub fn is_image_loaded(&self, path: &String) -> bool {
+        self.images.contains_key(path)
+    }
+
+    /// clears the cached images
+    pub fn clear_image_cache(&mut self) {
+        self.images = Default::default();
+    }
+}
+

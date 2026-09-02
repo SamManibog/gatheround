@@ -7,7 +7,7 @@ use crate::{
 };
 
 pub trait IRenderer {
-    type Image;
+    type Texture;
     type Font;
 
     /// compile a visual into a to-scale and magnified texture, assuming the given magnification dimensions
@@ -17,8 +17,8 @@ pub trait IRenderer {
         &mut self,
         visual: &VisualInfo<C, R, V>,
         magnification_dimensions: V,
-        visual_component_provider: VisualComponentProvider<'_, Self::Font, Self::Image>,
-    ) -> TextureInfo<Self::Image>
+        visual_component_provider: VisualComponentProvider<'_, Self::Font, Self::Texture>,
+    ) -> Result<TextureInfo<Self::Texture>, String>
     where
         C: IColor,
         R: IRect,
@@ -31,5 +31,5 @@ pub trait IRenderer {
 
     /// loads an image into an acceptable format
     /// return a result with a message for an error
-    fn load_image(&mut self, path: &Path) -> Result<Self::Image, String>;
+    fn load_image(&mut self, path: &Path) -> Result<Self::Texture, String>;
 }
