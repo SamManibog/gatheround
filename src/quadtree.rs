@@ -47,6 +47,11 @@ impl<E: Clone + Eq, R: IRect> QuadTree<E, R> {
         }
     }
 
+    /// returns the aabb of the quadtree
+    pub fn aabb(&self) -> R {
+        self.aabb
+    }
+
     /// gets the number of contained items in this node
     fn node_entry_count(&self) -> usize {
         self.contained_entries.len() + self.overflow_entries.len()
@@ -76,7 +81,12 @@ impl<E: Clone + Eq, R: IRect> QuadTree<E, R> {
     }
 
     /// recursive helper for query_range, adding intersections to a list
-    fn query_range_helper<S: IRect, T: IRect>(&self, aabb: S, get_aabb: &impl Fn(&E) -> T, intersecting_list: &mut Vec<E>) {
+    fn query_range_helper<S: IRect, T: IRect>(
+        &self,
+        aabb: S,
+        get_aabb: &impl Fn(&E) -> T,
+        intersecting_list: &mut Vec<E>,
+    ) {
         // if aabb is out of range, return early
         if !self.intersects_aabb(aabb) {
             return;
@@ -102,7 +112,7 @@ impl<E: Clone + Eq, R: IRect> QuadTree<E, R> {
         }
     }
 
-    /// gets a list of all entries containing the given point 
+    /// gets a list of all entries containing the given point
     /// you must provide a fetching function that maps each entry to an aabb
     pub fn query_point<V: IVec2, T: IRect>(&self, point: V, get_aabb: &impl Fn(&E) -> T) -> Vec<E> {
         let mut containers = Vec::new();
@@ -111,7 +121,12 @@ impl<E: Clone + Eq, R: IRect> QuadTree<E, R> {
     }
 
     /// recursive helper for query_point, adding containers to a list
-    fn query_point_helper<V: IVec2, T: IRect>(&self, point: V, get_aabb: &impl Fn(&E) -> T, containing_list: &mut Vec<E>) {
+    fn query_point_helper<V: IVec2, T: IRect>(
+        &self,
+        point: V,
+        get_aabb: &impl Fn(&E) -> T,
+        containing_list: &mut Vec<E>,
+    ) {
         // if aabb is out of range, return early
         if !self.contains_point(point) {
             return;
@@ -137,17 +152,26 @@ impl<E: Clone + Eq, R: IRect> QuadTree<E, R> {
         }
     }
 
-    /// removes entries that contain a point and pass the given retain function (return true for removal)
+    /// removes entries in the regions that contain the given point
     /// returns a list of all entries removed
     /// used, for example, to remove a specific entry from the tree
-    pub fn extract_on_point<V: IVec2>(&mut self, point: V, predicate: &impl Fn(&E) -> bool) -> Vec<E> {
+    pub fn extract_from_regions_on_point<V: IVec2>(
+        &mut self,
+        point: V,
+        predicate: &impl Fn(&E) -> bool,
+    ) -> Vec<E> {
         let mut removals = Vec::new();
-        self.extract_on_point_helper(point, predicate, &mut removals);
+        self.extract_from_regions_on_point_helper(point, predicate, &mut removals);
         removals
     }
 
     /// recursive helper for query_point, adding containers to a list
-    fn extract_on_point_helper<V: IVec2>(&mut self, point: V, predicate: &impl Fn(&E) -> bool, removal_list: &mut Vec<E>) {
+    fn extract_from_regions_on_point_helper<V: IVec2>(
+        &mut self,
+        point: V,
+        predicate: &impl Fn(&E) -> bool,
+        removal_list: &mut Vec<E>,
+    ) {
         // if aabb is out of range, return early
         if !self.contains_point(point) {
             return;
@@ -156,12 +180,18 @@ impl<E: Clone + Eq, R: IRect> QuadTree<E, R> {
         let initial_list_len = removal_list.len();
 
         // check overlaps in this node
-        removal_list.extend(self.contained_entries.extract_if(.., |entry| { predicate(entry) }));
-        removal_list.extend(self.overflow_entries.extract_if(.., |entry| { predicate(entry) }));
+        removal_list.extend(
+            self.contained_entries
+                .extract_if(.., |entry| predicate(entry)),
+        );
+        removal_list.extend(
+            self.overflow_entries
+                .extract_if(.., |entry| predicate(entry)),
+        );
 
         // check overlaps at subregions
         for subregion in self.subregion_iter_mut() {
-            subregion.extract_on_point_helper(point, predicate, removal_list);
+            subregion.extract_from_regions_on_point_helper(point, predicate, removal_list);
         }
 
         // update entry count
@@ -170,7 +200,9 @@ impl<E: Clone + Eq, R: IRect> QuadTree<E, R> {
         // attempt to prune this node
         {
             // check if pruning can/should be performed
-            if self.subregions.is_none() || self.entry_count > Self::TARGET_ENTRY_COUNT { return; }
+            if self.subregions.is_none() || self.entry_count > Self::TARGET_ENTRY_COUNT {
+                return;
+            }
 
             // consume subregions
             let regions = self.subregions.take().unwrap();
@@ -182,7 +214,7 @@ impl<E: Clone + Eq, R: IRect> QuadTree<E, R> {
             }
         }
     }
-    
+
     /// inserts an entry with the given aabb, returns true on successful insert
     /// attempts to place node in this thing first, if not full, then prioritizes placement in subregions
     /// time complexity: O(logn)
@@ -268,7 +300,9 @@ impl<E: Clone + Eq, R: IRect> QuadTree<E, R> {
         // note: entry count does not need to change as no entries are added or removed from this subtree
 
         // we are done if there are no regions to collapse or there are more entries than can fit in this node
-        if self.subregions.is_none() || self.entry_count > Self::TARGET_ENTRY_COUNT { return; }
+        if self.subregions.is_none() || self.entry_count > Self::TARGET_ENTRY_COUNT {
+            return;
+        }
 
         // consume subregions
         let regions = self.subregions.take().unwrap();
@@ -285,7 +319,9 @@ impl<E: Clone + Eq, R: IRect> QuadTree<E, R> {
     fn redistribute<T: IRect>(&mut self, get_aabb: &impl Fn(&E) -> T) {
         // if we are not at capacity then redistribution is not helpful and we are done with
         // this node
-        if self.entry_count <= Self::TARGET_ENTRY_COUNT { return; }
+        if self.entry_count <= Self::TARGET_ENTRY_COUNT {
+            return;
+        }
 
         // insertion on later steps will be useless if we do not split now
         self.split_quadtree();
@@ -342,7 +378,7 @@ impl<E: Clone + Eq, R: IRect> QuadTree<E, R> {
     fn subregions_sorted(&mut self) -> Vec<&mut Self> {
         if let Some(regions_list) = self.subregions.as_deref_mut() {
             let mut clone_list: Vec<&mut Self> = regions_list.iter_mut().collect();
-            clone_list.sort_unstable_by_key(|f| { f.entry_count });
+            clone_list.sort_unstable_by_key(|f| f.entry_count);
             clone_list
         } else {
             Vec::new()
@@ -368,10 +404,22 @@ impl<E: Clone + Eq, R: IRect> QuadTree<E, R> {
         let far_y = self.aabb.y() + self.aabb.height() - sub_height;
 
         self.subregions = Some(Box::new([
-            Self::new(R::from_position_dimension((far_x, near_y), (sub_width, sub_height))),
-            Self::new(R::from_position_dimension((far_x, far_y), (sub_width, sub_height))),
-            Self::new(R::from_position_dimension((near_x, far_y), (sub_width, sub_height))),
-            Self::new(R::from_position_dimension((near_x, near_y), (sub_width, sub_height))),
+            Self::new(R::from_position_dimension(
+                (far_x, near_y),
+                (sub_width, sub_height),
+            )),
+            Self::new(R::from_position_dimension(
+                (far_x, far_y),
+                (sub_width, sub_height),
+            )),
+            Self::new(R::from_position_dimension(
+                (near_x, far_y),
+                (sub_width, sub_height),
+            )),
+            Self::new(R::from_position_dimension(
+                (near_x, near_y),
+                (sub_width, sub_height),
+            )),
         ]));
 
         true
@@ -390,7 +438,9 @@ impl<E: Clone + Eq, R: IRect> QuadTree<E, R> {
 
     /// an iterator over all entries in this node
     pub fn entry_iter(&self) -> impl Iterator<Item = &E> {
-        self.contained_entries.iter().chain(self.overflow_entries.iter())
+        self.contained_entries
+            .iter()
+            .chain(self.overflow_entries.iter())
     }
 
     /// a debug function for drawing this quadtree
@@ -400,7 +450,11 @@ impl<E: Clone + Eq, R: IRect> QuadTree<E, R> {
     ///  1) the rectangle itself
     ///  2) a reference to the entry (if the rect is for an entry, otherwise none to signify that
     ///     it's for a quadtree subregion)
-    pub fn debug_draw<T: IRect + Into<R>>(&self, get_aabb: &impl Fn(&E) -> T, draw_aabb: &mut impl FnMut(&R, Option<&E>)) {
+    pub fn debug_draw<T: IRect + Into<R>>(
+        &self,
+        get_aabb: &impl Fn(&E) -> T,
+        draw_aabb: &mut impl FnMut(&R, Option<&E>),
+    ) {
         // draw entry aabbs
         for entry in self.entry_iter() {
             let aabb = T::into(get_aabb(entry));
@@ -416,4 +470,3 @@ impl<E: Clone + Eq, R: IRect> QuadTree<E, R> {
         }
     }
 }
-

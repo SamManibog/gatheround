@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use raylib::{
     RaylibHandle, RaylibThread,
@@ -647,7 +647,7 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
             for component in visual.components() {
                 match component {
                     VisualComponent::Textbox(t) => {
-                        rect = Rectangle::bounding(&rect, &t.rect);
+                        rect = rect.bounding(&t.rect);
                     }
 
                     VisualComponent::Image(i) => {
@@ -662,11 +662,11 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
                                 ),
                             );
 
-                            rect = Rectangle::bounding(&rect, &r);
+                            rect = rect.bounding(&r);
                         }
                     }
 
-                    VisualComponent::Pattern(p) => rect = Rectangle::bounding(&rect, &p.rect),
+                    VisualComponent::Pattern(p) => rect = rect.bounding(&p.rect),
                 }
             }
 
@@ -799,6 +799,30 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
                 )),
             },
         }
+    }
+
+    fn draw_board<
+        R: IRect,
+        V: IVec2,
+        S: crate::geometry::IConvexShape + crate::lua::FromLuaTable,
+    >(
+        &mut self,
+        board: &crate::board::BoardManager<R, V, S, Self::Texture, Self::Font>,
+    ) {
+        let draw_layers = BTreeMap::from_iter(board.draw_layer_iter().map(|l| {
+            (
+                l,
+                self.rl.load_render_texture(
+                    self.thread,
+                    self.rl.get_render_width() as u32,
+                    self.rl.get_render_height() as u32,
+                ),
+            )
+        }));
+
+        erroror lsofsldkfjsfjl
+
+        todo!()
     }
 }
 

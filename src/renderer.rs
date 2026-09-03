@@ -1,9 +1,12 @@
 use std::path::Path;
 
 use crate::{
+    board::BoardManager,
     color::IColor,
-    geometry::{IRect, IVec2},
-    piece_components::{TextureInfo, VisualInfo}, resources::VisualComponentProvider,
+    geometry::{IConvexShape, IRect, IVec2},
+    lua::FromLuaTable,
+    piece_components::{TextureInfo, VisualInfo},
+    resources::VisualComponentProvider,
 };
 
 pub trait IRenderer {
@@ -24,12 +27,18 @@ pub trait IRenderer {
         R: IRect,
         V: IVec2;
 
-
     /// loads a font into an acceptable format, given a path to its font file
     /// return a result with a message for an error
-    fn load_font(&mut self, path: &Path, size: u32, characters: &str) -> Result<Self::Font, String>;
+    fn load_font(&mut self, path: &Path, size: u32, characters: &str)
+    -> Result<Self::Font, String>;
 
     /// loads an image into an acceptable format
     /// return a result with a message for an error
     fn load_image(&mut self, path: &Path) -> Result<Self::Texture, String>;
+
+    /// draws a board to the screen
+    fn draw_board<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable>(
+        &mut self,
+        board: &BoardManager<R, V, S, Self::Texture, Self::Font>,
+    );
 }

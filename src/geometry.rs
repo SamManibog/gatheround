@@ -44,7 +44,7 @@ pub fn vec2_from_lua_table<V: IVec2>(table: &Table) -> Result<V, String> {
 }
 
 /// trait representing 2d vectors
-pub trait IVec2: Sized + Clone + Copy {
+pub trait IVec2: Sized + Clone + Copy + PartialEq {
     /// instance this from an x and y coordinate
     fn from_xy(x: f32, y: f32) -> Self;
 
@@ -200,6 +200,33 @@ pub trait IRect: Sized + Clone + Copy {
         Self::from_position_dimension(center.sub(dimensions.scaled(0.5)), dimensions)
     }
 
+    /// fits the given rectangle into this one by translating it minimally
+    fn fit<R: IRect>(&self, other: R) -> Self {
+        type V = (f32, f32);
+
+        let min: V = self.min();
+        let max: V = self.max();
+        let pos: V = other.position();
+        let dim: V = other.dimensions();
+        let new_pos = (
+            pos.x().clamp(min.x(), max.x() - dim.x()), 
+            pos.y().clamp(min.y(), max.y() - dim.y())
+        );
+
+        Self::from_position_dimension(new_pos, dim)
+    }
+
+    /// fits the given point into this one by translating it minimally
+    fn fit_point<V: IVec2>(&self, point: V) -> V {
+        let min: V = self.min();
+        let max: V = self.max();
+
+        V::from_xy(
+            point.x().clamp(min.x(), max.x()), 
+            point.y().clamp(min.y(), max.y())
+        )
+    }
+
     /// creates a rectangle with 0 area at the given point
     fn empty<V: IVec2>(position: V) -> Self {
         Self::from_position_dimension(position, V::from_xy(0.0, 0.0))
@@ -216,10 +243,10 @@ pub trait IRect: Sized + Clone + Copy {
     }
 
     /// creates the rectangle that contains two rectangles
-    fn bounding<R1: IRect, R2: IRect>(r1: &R1, r2: &R2) -> Self {
-        let r1_min = r1.min::<(f32, f32)>();
+    fn bounding<R2: IRect>(self, r2: &R2) -> Self {
+        let r1_min = self.min::<(f32, f32)>();
         let r2_min = r2.min::<(f32, f32)>();
-        let r1_max = r1.max::<(f32, f32)>();
+        let r1_max = self.max::<(f32, f32)>();
         let r2_max = r2.max::<(f32, f32)>();
 
         let min = (r1_min.x().min(r2_min.x()), r1_min.y().min(r2_min.y()));
@@ -227,6 +254,12 @@ pub trait IRect: Sized + Clone + Copy {
 
         Self::from_min_max(min, max)
     }
+
+    /// checks if this rectangle is empty (has 0 or negative area)
+    fn is_empty(&self) -> bool {
+        self.area() <= 0.0
+    }
+
     /// gets the x position of the top-right corner
     fn x(&self) -> f32;
 
@@ -663,7 +696,7 @@ impl<V: IVec2> FromLuaValue for Transform<V> {
     fn try_from_lua_value(value: &mlua::prelude::LuaValue) -> Result<Self, String> {
         match value {
             Value::Table(table) => Self::try_from_lua_table(&table),
-            _ => Err(format!("non-table value."))
+            _ => Err(format!("non-table value.")),
         }
     }
 }
@@ -765,11 +798,10 @@ impl<S: IConvexShape + FromLuaTable> FromLuaValue for CollisionShape<S> {
     fn try_from_lua_value(value: &mlua::prelude::LuaValue) -> Result<Self, String> {
         match value {
             Value::Table(table) => Self::try_from_lua_table(&table),
-            _ => Err(format!("non-table value."))
+            _ => Err(format!("non-table value.")),
         }
     }
 }
-
 
 impl<S: IConvexShape> Default for CollisionShape<S> {
     fn default() -> Self {
@@ -808,7 +840,7 @@ impl<S: IConvexShape> CollisionShape<S> {
     }
 
     /// creates an aabb from this shape
-    pub fn aabb<R: IRect>(&mut self) -> R {
+    pub fn aabb<R: IRect>(&self) -> R {
         type V = (f32, f32);
 
         let min_x = self.furthest_point(V::from_xy(-1.0, 0.0)).x();
@@ -820,7 +852,7 @@ impl<S: IConvexShape> CollisionShape<S> {
     }
 
     /// creates an aabb from this shape with the shape tranformed by the given rotation in radians
-    pub fn aabb_rotated<R: IRect>(&mut self, angle: f32) -> R {
+    pub fn aabb_rotated<R: IRect>(&self, angle: f32) -> R {
         type V = (f32, f32);
 
         let min_x = self
@@ -833,6 +865,15 @@ impl<S: IConvexShape> CollisionShape<S> {
         let max_y = self.furthest_point_rotated(angle, V::from_xy(0.0, 1.0)).y();
 
         R::from_min_max(V::from_xy(min_x, min_y), V::from_xy(max_x, max_y))
+    }
+
+    /// creates an aabb transformed by the given transform
+    pub fn aabb_transformed<V: IVec2, R: IRect>(&self, transform: &Transform<V>) -> R {
+        let rotated = self.aabb_rotated::<R>(transform.angle);
+        R::from_position_dimension(
+            rotated.position::<V>().add(transform.offset),
+            rotated.dimensions::<V>(),
+        )
     }
 
     /// check if this shape intersects with another, given each shape's transform
@@ -857,6 +898,21 @@ impl<S: IConvexShape> CollisionShape<S> {
 
         return false;
     }
+}
+
+/// creates an aabb from a list of convex shapes
+/// returns None of there are no shapes in the iterator
+pub fn compute_advanced_aabb<'a, R: IRect + 'a, V: IVec2, S: IConvexShape + 'a>(
+    transform: &Transform<V>,
+    mut shapes: impl Iterator<Item = &'a CollisionShape<S>>,
+) -> Option<R> {
+    let mut aabb = shapes.next()?.aabb_transformed::<V, R>(&transform);
+
+    for shape in shapes {
+        aabb = aabb.bounding(&shape.aabb_transformed::<V, R>(&transform));
+    }
+
+    Some(aabb)
 }
 
 /// uses the gjk algorithm to determine if two covexshapes are intersecting

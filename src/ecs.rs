@@ -32,7 +32,7 @@ impl<M> FromLuaValue for Entity<M> {
             mlua::Value::Number(float) => {
                 if float.round() != *float {
                     Err(format!("Entity IDs must be integer values; got {float}"))
-                } else if *float > u32::MAX as f64 || *float < u32::MIN as f64{
+                } else if *float > u32::MAX as f64 || *float < u32::MIN as f64 {
                     Err(format!(
                         "Entity IDs must be in the range [{}, {}]; got {float}.",
                         u32::MIN,
@@ -55,7 +55,7 @@ impl<M> FromLuaValue for Entity<M> {
                 }
             }
 
-            _ => Err("Entity IDs must be integer values; got incorrect type.".to_string())
+            _ => Err("Entity IDs must be integer values; got incorrect type.".to_string()),
         }
     }
 }
@@ -268,7 +268,7 @@ impl<E: EntityTrait> NamedEntityManager<E> {
 
     /// returns an iterator over entities and their optional names
     pub fn iter(&self) -> impl Iterator<Item = (E, Option<&String>)> {
-        self.entity_names.pairs().map(|(e, n)| {
+        self.entity_names.pairs_iter().map(|(e, n)| {
             let name = if n.is_empty() { None } else { Some(n) };
             (*e, name)
         })
@@ -276,6 +276,7 @@ impl<E: EntityTrait> NamedEntityManager<E> {
 }
 
 /// manages a set of entities supporting fast (but unordered) iteration over them
+#[derive(Debug, Clone)]
 pub struct DenseSet<E: EntityTrait> {
     entities: DenseComponentManager<E, ()>,
 }
@@ -299,6 +300,11 @@ impl<E: EntityTrait> DenseSet<E> {
         self.entities.len()
     }
 
+    /// whether this contains no entities/data
+    pub fn is_empty(&self) -> bool {
+        self.len() <= 0
+    }
+
     /// inserts a component into this manager
     /// returns true if the entity was already contgained
     pub fn insert(&mut self, entity: E) -> bool {
@@ -316,12 +322,13 @@ impl<E: EntityTrait> DenseSet<E> {
     }
 
     /// returns an iterator over entities
-    pub fn entities(&self) -> impl Iterator<Item = &E> {
-        self.entities.entities()
+    pub fn iter(&self) -> impl Iterator<Item = E> {
+        self.entities.entity_iter()
     }
 }
 
 /// manages a single component for the board's ecs using a dense vector
+#[derive(Debug, Clone)]
 pub struct DenseComponentManager<E: EntityTrait, T> {
     /// a map entity id -> index in entities and data
     /// uses usize::MAX as a sentenial value for an uninitialized entity
@@ -350,9 +357,23 @@ impl<E: EntityTrait, T> DenseComponentManager<E, T> {
         }
     }
 
+    /// creates a new dense storage with the given capacity
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            sparse: vec![usize::MAX; capacity],
+            entities: Vec::with_capacity(capacity),
+            data: Vec::with_capacity(capacity),
+        }
+    }
+
     /// returns the number of entities managed
     pub fn len(&self) -> usize {
         self.data.len()
+    }
+
+    /// whether this contains no entities/data
+    pub fn is_empty(&self) -> bool {
+        self.len() <= 0
     }
 
     /// inserts a component into this manager
@@ -425,7 +446,7 @@ impl<E: EntityTrait, T> DenseComponentManager<E, T> {
     }
 
     /// queries the manager for an entity, mutably
-    pub fn get_mut(&mut self, entity: E) -> Option<&T> {
+    pub fn get_mut(&mut self, entity: E) -> Option<&mut T> {
         let idx = *self.sparse.get(entity.id() as usize)?;
         if idx == usize::MAX {
             return None;
@@ -435,27 +456,27 @@ impl<E: EntityTrait, T> DenseComponentManager<E, T> {
     }
 
     /// returns an iterator over component references
-    pub fn components(&self) -> impl Iterator<Item = &T> {
+    pub fn component_iter(&self) -> impl Iterator<Item = &T> {
         self.data.iter()
     }
 
     /// returns an iterator over mutable component references
-    pub fn components_mut(&mut self) -> impl Iterator<Item = &mut T> {
+    pub fn component_iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
         self.data.iter_mut()
     }
 
     /// returns an iterator over entities
-    pub fn entities(&self) -> impl Iterator<Item = &E> {
-        self.entities.iter()
+    pub fn entity_iter(&self) -> impl Iterator<Item = E> {
+        self.entities.iter().copied()
     }
 
     /// returns an iterator over entities and their associated components
-    pub fn pairs(&self) -> impl Iterator<Item = (&E, &T)> {
+    pub fn pairs_iter(&self) -> impl Iterator<Item = (&E, &T)> {
         self.entities.iter().zip(self.data.iter())
     }
 
     /// returns an iterator over entities and their associated components mutably
-    pub fn pairs_mut(&mut self) -> impl Iterator<Item = (&E, &mut T)> {
+    pub fn pairs_iter_mut(&mut self) -> impl Iterator<Item = (&E, &mut T)> {
         self.entities.iter().zip(self.data.iter_mut())
     }
 }

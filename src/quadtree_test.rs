@@ -224,7 +224,7 @@ impl eframe::App for QuadTreeTest {
 
         // update quadtree with new rect position
         if let Some(pos) = old_focus_position {
-            self.quadtree.extract_on_point(pos, &|e| { *e == self.focused });
+            self.quadtree.extract_from_regions_on_point(pos, &|e| { *e == self.focused });
             self.quadtree.insert(self.focused, &|e| { *self.rects.get(e).unwrap() });
         }
 
@@ -295,7 +295,7 @@ impl eframe::App for QuadTreeTest {
 
         if let Some(to_delete) = to_delete_opt && self.rect_list.len() > 1 {
             let delete_pos = self.rects.get(&to_delete).unwrap().center();
-            self.quadtree.extract_on_point(delete_pos, &|e| { *e == self.focused });
+            self.quadtree.extract_from_regions_on_point(delete_pos, &|e| { *e == self.focused });
             self.rects.remove(&to_delete);
 
             if self.focused == to_delete {
