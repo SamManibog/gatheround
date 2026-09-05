@@ -9,7 +9,19 @@ use std::{
 use crate::{bitvec::BitVec, lua::FromLuaValue};
 
 pub trait EntityTrait:
-    Clone + Copy + PartialEq + Eq + PartialOrd + Ord + Hash + Unpin + Send + Sync + Sized + FromLuaValue
+    Debug
+    + Clone
+    + Copy
+    + PartialEq
+    + Eq
+    + PartialOrd
+    + Ord
+    + Hash
+    + Unpin
+    + Send
+    + Sync
+    + Sized
+    + FromLuaValue
 {
     fn id(&self) -> u32;
 
@@ -23,6 +35,12 @@ impl<M> EntityTrait for Entity<M> {
 
     fn from_id(id: usize) -> Self {
         Self(id as u32, PhantomData)
+    }
+}
+
+impl<M> Debug for Entity<M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Entity({:?}, {:?})", self.0, self.1)
     }
 }
 
@@ -63,7 +81,6 @@ impl<M> FromLuaValue for Entity<M> {
 pub const INITIAL_ENTITY_CAPACITY: usize = 1000;
 pub const ENTITY_CAPACITY_GROWTH_FACTOR: f32 = 2.0;
 
-#[derive(Debug)]
 #[repr(transparent)]
 pub struct Entity<M>(u32, PhantomData<M>);
 impl<M> Clone for Entity<M> {
@@ -483,6 +500,7 @@ impl<E: EntityTrait, T> DenseComponentManager<E, T> {
 
 /// efficiently maintains a set of entities potentially with associated names
 /// entities can be accessed by their names
+#[derive(Debug)]
 pub struct ResourceManager<E: EntityTrait, T> {
     /// the list of available entity ids
     free_entity_queue: VecDeque<E>,
@@ -543,7 +561,7 @@ impl<E: EntityTrait, T> ResourceManager<E, T> {
     /// fails if the entity does not exist
     fn get_entity_index(&self, entity: E) -> Option<usize> {
         let idx = self.sparse[entity.id() as usize];
-        if idx != usize::MAX { None } else { Some(idx) }
+        if idx == usize::MAX { None } else { Some(idx) }
     }
 
     /// creates a new unnamed resource, returning the entity created
@@ -585,7 +603,7 @@ impl<E: EntityTrait, T> ResourceManager<E, T> {
         self.entities.push(entity);
         self.resources.push(resource);
         self.names.push(name.clone());
-        self.name_to_entity_map.insert(name, entity);
+        self.name_to_entity_map.insert(name.clone(), entity);
 
         Ok(entity)
     }
@@ -771,7 +789,7 @@ impl<E: EntityTrait, T> RcResourceManager<E, T> {
     /// fails if the entity does not exist
     fn get_entity_index(&self, entity: E) -> Option<usize> {
         let idx = self.sparse[entity.id() as usize];
-        if idx != usize::MAX { None } else { Some(idx) }
+        if idx == usize::MAX { None } else { Some(idx) }
     }
 
     /// creates a new unnamed resource, returning the entity created

@@ -1,21 +1,26 @@
-use std::{cell::RefCell, path::Path, rc::Rc, sync::mpsc};
-
-use mlua::{
-    Lua, LuaOptions, MultiValue, StdLib, Table,
-    Value::{self, Nil},
+use std::{
+    cell::RefCell,
+    path::{Path, PathBuf},
+    rc::Rc,
 };
-use notify::Watcher;
+
+use mlua::{Lua, LuaOptions, StdLib, Table, Value};
 use raylib::{
+    RaylibHandle, RaylibThread,
     ffi::{Color, Rectangle, Vector2},
     text::Font,
-    texture::Texture2D,
+    texture::RenderTexture2D,
 };
 
 use crate::{
-    geometry::{ConvexHull, IVec2},
+    board::{BoardManager, EntityIdentifier, PieceIR},
+    ecs::EntityTrait,
+    geometry::{ConvexHull, IConvexShape, IRect, IVec2, Transform, vec2_from_lua_table},
     piece_components::VisualInfo,
     raylib_integrations::RaylibRenderer,
 };
+
+const MAIN_LUA_FILE: &str = "main.lua";
 
 /// for structs that can be created based off of a lua table
 pub trait FromLuaTable: Sized {
@@ -64,7 +69,12 @@ pub fn vector_from_lua_value<T: FromLuaValue>(
         if let Ok(value) = result {
             match T::try_from_lua_value(&value) {
                 Ok(v) => values.push(v),
-                Err(msg) => return Err(format!("Invalid {value_name} at index {}: {msg}", index + 1)),
+                Err(msg) => {
+                    return Err(format!(
+                        "Invalid {value_name} at index {}: {msg}",
+                        index + 1
+                    ));
+                }
             }
         } else {
             return Err(format!("Invalid {value_name} at index {}.", index + 1));
@@ -82,118 +92,301 @@ fn get_lua_instance() -> Lua {
     Lua::new_with(libs, LuaOptions::default()).expect("Unable to create lua instance.")
 }
 
-/// runs a game editor from the given project path
-pub fn run_game(project_path: &Path) {
-    // initialize game resources
-    let resource_cell = Rc::new(RefCell::new(GameResources::<
-        Vector2,
-        ConvexHull<Vector2>,
-        Texture2D,
-        Font,
-    >::default()));
+#[inline]
+fn create_game_api_function<F1, F2, A, B, R, V, S, T, F>(
+    lua: &Lua,
+    project_path: &Path,
+    board: &Rc<RefCell<BoardManager<R, V, S, T, F>>>,
+    rl: &Rc<RefCell<RaylibHandle>>,
+    thread: &Rc<RefCell<RaylibThread>>,
+    name: &str,
+    func_creator: F1,
+) where
+    F1: Fn(
+        PathBuf,
+        Rc<RefCell<BoardManager<R, V, S, T, F>>>,
+        Rc<RefCell<RaylibHandle>>,
+        Rc<RefCell<RaylibThread>>,
+    ) -> F2,
+    F2: Fn(&Lua, A) -> mlua::Result<B> + mlua::MaybeSend + 'static,
+    A: mlua::FromLuaMulti,
+    B: mlua::IntoLuaMulti,
+    R: IRect,
+    V: IVec2,
+    S: IConvexShape + FromLuaTable,
+{
+    let function = lua
+        .create_function_mut(func_creator(
+            project_path.to_path_buf(),
+            board.clone(),
+            rl.clone(),
+            thread.clone(),
+        ))
+        .expect(&format!("Unable to create global function '{name}'"));
+    lua.globals()
+        .raw_set(name, function)
+        .expect(&format!("Unable to create global function '{name}'"));
+}
 
-    // setup raylib instance
-    let (mut rl, thread) = raylib::init()
-        .resizable()
-        .title("Gatheround Game Editor")
-        .build();
-    rl.set_target_fps(24);
-    let rl_cell = Rc::new(RefCell::new(rl));
-    let thread_cell = Rc::new(RefCell::new(thread));
+macro_rules! define_game_api {
+    ($name:expr, $lua:ident, $project_path:ident, $board_cell:ident, $rl_cell:ident, $thread_cell:ident, $body:block) => {
+        create_game_api_function(
+            &$lua,
+            &$project_path,
+            &$board_cell,
+            &$rl_cell,
+            &$thread_cell,
+            $name,
+            |$project_path, $board_cell, $rl_cell, $thread_cell| $body,
+        );
+    };
+}
 
+/// gets a lua instance with the proper game api
+#[allow(unused_variables)]
+pub fn get_game_lua_instance(
+    project_path: &Path,
+    board_cell: &Rc<
+        RefCell<BoardManager<Rectangle, Vector2, ConvexHull<Vector2>, RenderTexture2D, Font>>,
+    >,
+    rl_cell: &Rc<RefCell<RaylibHandle>>,
+    thread_cell: &Rc<RefCell<RaylibThread>>,
+) -> Lua {
     // setup the lua instance
+    //
+    // use the following template to define new functions
+    //  define_game_api!("...", lua, project_path, board_cell, rl_cell, thread_cell, {
+    //      move |_, ...: ...| {
+    //          // function body
+    //      }
+    //  })
     let lua = get_lua_instance();
-    {
-        let resources1 = resource_cell.clone();
-        let rl1 = rl_cell.clone();
-        let thread1 = thread_cell.clone();
+    define_game_api!(
+        "create_texture",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |_, (name, visual): (String, Table)| {
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
 
-        let api = [
-            // creates a new texture resource based on the given list
-            // on success returns the id of the texture or nil, error in case of failure
-            (
-                "create_texture",
-                lua.create_function(move |lua, (visual, name_opt): (Table, Option<String>)| {
-                    let mut output = MultiValue::new();
+                // check if name already exists
+                if board.contains_texture(&name) {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "Attempted to create a texture with name {name}, which is already in use."
+                    )));
+                }
 
-                    let mut resources = resources1.try_borrow_mut().expect("resources are already borrowed");
+                // try to parse the lua table
+                let result = VisualInfo::<Color, Rectangle, Vector2>::try_from_lua_table(&visual);
+                if let Err(msg) = result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let visual = result.unwrap();
 
-                    // check if name already exists
-                    if let Some(name) = &name_opt {
-                        if resources.textures.contains_texture_name(name) {
-                            output.push_back(Nil);
-                            output.push_back(Value::String(lua.create_string(&format!("Attempted to create a texture with name {name}, which is already in use."))?));
-                            return Ok(output);
-                        }
-                    }
+                // compile into a texture
+                let mut rl = rl_cell
+                    .try_borrow_mut()
+                    .expect("rl_cell is already borrowed");
+                let thread = thread_cell
+                    .try_borrow_mut()
+                    .expect("thread_cell is already borrowed");
+                let mut renderer = RaylibRenderer {
+                    rl: &mut rl,
+                    thread: &thread,
+                };
 
-                    // try to parse the lua table
-                    let result = VisualInfo::<Color, Rectangle, Vector2>::try_from_lua_table(&visual);
-                    if let Err(msg) = result {
-                        output.push_back(Nil);
-                        output.push_back(Value::String(lua.create_string(msg)?));
-                        return Ok(output);
-                    }
-                    let visual = result.unwrap();
+                let magnification_dimensions = board.dimensions().scaled(0.8);
+                let texture_result = board.create_texture(
+                    &project_path,
+                    name,
+                    &visual,
+                    magnification_dimensions,
+                    &mut renderer,
+                );
 
+                match texture_result {
+                    Ok(_) => Ok(()),
 
-                    // compile into a texture
-                    let mut rl = rl1.try_borrow_mut().expect("rl_cell is already borrowed");
-                    let thread = thread1.try_borrow_mut().expect("thread_cell is already borrowed");
-                    let mut renderer = RaylibRenderer {rl: &mut rl, thread: &thread};
-
-                    let texture_result = resources.textures.load_texture(name_opt, &visual, Vector2::from_xy(800.0, 800.0), &mut renderer);
-
-                    match texture_result {
-                        Ok(id) => {
-                        output.push_back(Value::Integer(id.id() as i64));
-                        Ok(output)
-                        }
-
-                        Err(msg) => {
-                            output.push_back(Nil);
-                            output.push_back(Value::String(
-                                lua.create_string(msg)?
-                            ));
-                            Ok(output)
-                        }
-                    }
-                })
-                .unwrap(),
-            ),
-
-        ];
-
-        for (name, function) in api {
-            lua.globals()
-                .raw_set(name, function)
-                .expect(&format!("Unable to create global function '{name}'"));
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
         }
+    );
+
+    define_game_api!(
+        "create_piece",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |_, table: Table| {
+                // try to parse the lua table
+                let result = PieceIR::try_from_lua_table(&table);
+                if let Err(msg) = result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let ir = result.unwrap();
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                let piece_result = board.create_piece(ir);
+
+                match piece_result {
+                    Ok(id) => Ok(id.id()),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
+        "set_transform",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |_, (value, table): (Value, Table)| {
+                // try to parse the entity
+                let entity_result = EntityIdentifier::try_from_lua_value(&value);
+                if let Err(msg) = entity_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let entity = entity_result.unwrap();
+
+                // try to parse the lua table
+                let object_result = Transform::try_from_lua_table(&table);
+                if let Err(msg) = object_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let mut object = object_result.unwrap();
+                object.angle = object.angle.to_radians();
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.set_transform(entity, object) {
+                    Ok(()) => Ok(()),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
+        "set_position",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |_, (value, table): (Value, Table)| {
+                // try to parse the entity
+                let entity_result = EntityIdentifier::try_from_lua_value(&value);
+                if let Err(msg) = entity_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let entity = entity_result.unwrap();
+
+                // try to parse the lua table
+                let object_result = vec2_from_lua_table::<Vector2>(&table);
+                if let Err(msg) = object_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let object = object_result.unwrap();
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.set_position(entity, object) {
+                    Ok(()) => Ok(()),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
+        "set_angle",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |_, (value, angle): (Value, f32)| {
+                // try to parse the entity
+                let entity_result = EntityIdentifier::try_from_lua_value(&value);
+                if let Err(msg) = entity_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let entity = entity_result.unwrap();
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.set_angle(entity, angle.to_radians()) {
+                    Ok(()) => Ok(()),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
+        "get_texture",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, value: Value| {
+                // try to parse the entity
+                let entity_result = EntityIdentifier::try_from_lua_value(&value);
+                if let Err(msg) = entity_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let entity = entity_result.unwrap();
+
+                let board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.get_texture(entity) {
+                    Ok(tex) => Ok(tex.map(|s| lua.create_string(s).unwrap())),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    let main_path = project_path.join(MAIN_LUA_FILE);
+    let script_content = std::fs::read_to_string(&main_path)
+        .expect(&format!("Unable to read lua file '{:#?}'.", &main_path));
+    let main_chunk = lua.load(script_content);
+    if let Err(msg) = main_chunk.exec() {
+        panic!("Failed to run lua file '{:#?}':\n{msg}", &main_path,);
     }
 
-    // set up a file watch on project directory to determine when reloads must occur
-    let (notify_sender, notify_receiver) = mpsc::channel();
-    let mut file_watcher = notify::recommended_watcher(notify_sender).expect(&format!(
-        "Could not obtain a file watcher for '{}'.",
-        project_path.to_string_lossy()
-    ));
-    file_watcher
-        .watch(project_path, notify::RecursiveMode::Recursive)
-        .expect(&format!(
-            "Could not watch '{}'.",
-            project_path.to_string_lossy()
-        ));
-
-    // run editor
-    loop {
-        let rl = rl_cell
-            .try_borrow_mut()
-            .expect("raylib_cell is already borrowed mutably.");
-        if rl.window_should_close() {
-            return;
-        }
-        drop(rl);
-
-        todo!()
-    }
+    lua
 }

@@ -14,51 +14,43 @@ use crate::{
     renderer::IRenderer,
 };
 
-pub struct RuntimeInfo<'a, R: IRenderer> {
-    pub project_directory: &'a Path,
-    pub renderer: &'a mut R,
+#[cfg(target_os = "windows")]
+/// gets all possible font paths provided in order the that they should be searched, including:
+///  - Project-local fonts
+///  - User fonts
+///  - System fonts
+pub fn get_font_paths(project_path: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    paths.push(project_path.join("fonts"));
+    if let Some(home) = std::env::home_dir() {
+        paths.push(home.join(r"AppData\Local\Microsoft\Windows\Fonts"))
+    }
+    paths.push(PathBuf::from(r"C:\Windows\Fonts"));
+
+    paths
 }
 
-impl<'a, R: IRenderer> RuntimeInfo<'a, R> {
-    #[cfg(target_os = "windows")]
-    /// gets all possible font paths provided in order the that they should be searched, including:
-    ///  - Project-local fonts
-    ///  - User fonts
-    ///  - System fonts
-    pub fn font_paths(&self) -> Vec<PathBuf> {
-        let mut paths = Vec::new();
+#[cfg(target_os = "linux")]
+/// gets all possible font paths provided in order the that they should be searched, including:
+///  - System fonts
+///  - User fonts
+///  - Project-local fonts
+pub fn font_paths(&self) -> PathBuf {
+    todo!()
+}
 
-        paths.push(self.project_directory.join("fonts"));
-        if let Some(home) = std::env::home_dir() {
-            paths.push(home.join(r"AppData\Local\Microsoft\Windows\Fonts"))
-        }
-        paths.push(PathBuf::from(r"C:\Windows\Fonts"));
+#[cfg(target_os = "macos")]
+/// gets all possible font paths provided in order the that they should be searched, including:
+///  - System fonts
+///  - User fonts
+///  - Project-local fonts
+pub fn font_paths(&self) -> PathBuf {
+    todo!()
+}
 
-        paths
-    }
-
-    #[cfg(target_os = "linux")]
-    /// gets all possible font paths provided in order the that they should be searched, including:
-    ///  - System fonts
-    ///  - User fonts
-    ///  - Project-local fonts
-    pub fn font_paths(&self) -> PathBuf {
-        todo!()
-    }
-
-    #[cfg(target_os = "macos")]
-    /// gets all possible font paths provided in order the that they should be searched, including:
-    ///  - System fonts
-    ///  - User fonts
-    ///  - Project-local fonts
-    pub fn font_paths(&self) -> PathBuf {
-        todo!()
-    }
-
-    pub fn image_path(&self) -> PathBuf {
-        let path = self.project_directory;
-        path.join("images")
-    }
+pub fn get_image_path(project_path: &Path) -> PathBuf {
+    project_path.join("images")
 }
 
 pub struct VisualComponentProvider<'a, F, I> {
@@ -68,12 +60,20 @@ pub struct VisualComponentProvider<'a, F, I> {
     /// the images used for rendering visuals
     images: *mut HashMap<String, I>,
 
+    /// the project's directory
+    project_path: &'a Path,
+
     marker: PhantomData<&'a ()>,
 }
 
 impl<'a, F, I> VisualComponentProvider<'a, F, I> {
-    pub fn new(fonts: &'a mut FontManager<F>, images: &'a mut HashMap<String, I>) -> Self {
+    pub fn new(
+        project_path: &'a Path,
+        fonts: &'a mut FontManager<F>,
+        images: &'a mut HashMap<String, I>,
+    ) -> Self {
         Self {
+            project_path,
             fonts: fonts as *mut FontManager<F>,
             images: images as *mut HashMap<String, I>,
             marker: PhantomData,
@@ -83,20 +83,20 @@ impl<'a, F, I> VisualComponentProvider<'a, F, I> {
     pub fn get_or_load_font<R: IRenderer<Font = F>>(
         &mut self,
         renderer: &mut R,
-        path: &String,
+        font_name: &String,
         size: u32,
         characters: &str,
     ) -> Option<&F> {
         // SAFETY: only one font reference can be acquired at the same time because this struct is
         // borrowed mutably, there is no danger of multiple mutable references to the font manager
         let fonts = unsafe { &mut *self.fonts };
-        if let Some(f) = fonts.get_font(path, size, characters) {
+        if let Some(f) = fonts.get_font(font_name, size, characters) {
             return Some(f);
         }
 
         let fonts = unsafe { &mut *self.fonts };
-        fonts.load_font(renderer, path, size, characters);
-        fonts.get_font(path, size, characters)
+        fonts.load_font(renderer, self.project_path, font_name, size, characters);
+        fonts.get_font(font_name, size, characters)
     }
 
     pub fn get_or_load_image<R: IRenderer<Texture = I>>(
@@ -112,7 +112,7 @@ impl<'a, F, I> VisualComponentProvider<'a, F, I> {
         }
 
         let images = unsafe { &mut *self.images };
-        let path_buf = PathBuf::from(path);
+        let path_buf = get_image_path(self.project_path).join(path);
         let image = if let Ok(i) = renderer.load_image(&path_buf) {
             i
         } else {
@@ -154,17 +154,33 @@ impl<F> FontManager<F> {
     pub fn batch_load_font<R: IRenderer<Font = F>>(
         &mut self,
         renderer: &mut R,
-        path: &String,
+        project_path: &Path,
+        font_name: &String,
         sizes: &[u32],
         characters: &str,
     ) -> bool {
-        let path_result = PathBuf::try_from(path);
-        if path_result.is_err() {
-            return false;
+        for font_dir in get_font_paths(project_path) {
+            if self.batch_load_font_helper(renderer, &font_dir, font_name, sizes, characters) {
+                return true;
+            }
         }
-        let path_buf = path_result.unwrap();
 
-        if let Some(entry) = self.fonts.get_mut(path) {
+        false
+    }
+
+    /// batch loads multiple font sizes at once
+    /// returns true if all sizes could be loaded
+    pub fn batch_load_font_helper<R: IRenderer<Font = F>>(
+        &mut self,
+        renderer: &mut R,
+        font_dir: &Path,
+        font_name: &String,
+        sizes: &[u32],
+        characters: &str,
+    ) -> bool {
+        let path_buf = font_dir.join(font_name);
+
+        if let Some(entry) = self.fonts.get_mut(font_name) {
             // update existing entry with new characters
             let mut needs_update = false;
             for c in characters.chars() {
@@ -216,7 +232,7 @@ impl<F> FontManager<F> {
                         charset: RoaringBitmap::from_iter(characters.chars().map(|c| c as u32)),
                         sizes: temp_map,
                     };
-                    self.fonts.insert(path.clone(), entry);
+                    self.fonts.insert(font_name.clone(), entry);
                 }
 
                 return false;
@@ -228,7 +244,7 @@ impl<F> FontManager<F> {
             charset: RoaringBitmap::from_iter(characters.chars().map(|c| c as u32)),
             sizes: temp_map,
         };
-        self.fonts.insert(path.clone(), entry);
+        self.fonts.insert(font_name.clone(), entry);
 
         true
     }
@@ -237,16 +253,17 @@ impl<F> FontManager<F> {
     pub fn load_font<R: IRenderer<Font = F>>(
         &mut self,
         renderer: &mut R,
-        path: &String,
+        project_path: &Path,
+        font_name: &String,
         size: u32,
         characters: &str,
     ) -> bool {
         let sizes = [size; 1];
-        self.batch_load_font(renderer, path, &sizes, characters)
+        self.batch_load_font(renderer, project_path, font_name, &sizes, characters)
     }
 
-    pub fn get_font(&self, path: &String, size: u32, characters: &str) -> Option<&F> {
-        let font_entry = self.fonts.get(path)?;
+    pub fn get_font(&self, font_name: &String, size: u32, characters: &str) -> Option<&F> {
+        let font_entry = self.fonts.get(font_name)?;
         if characters
             .chars()
             .position(|c| !font_entry.charset.contains(c as u32))
@@ -290,6 +307,7 @@ impl<T, F> TextureManager<T, F> {
     /// textures may be assigned an optional name that can be used to identify it
     pub fn load_texture<C, R, V, IR>(
         &mut self,
+        project_path: &Path,
         name: Option<String>,
         visual: &VisualInfo<C, R, V>,
         magnification_dimensions: V,
@@ -299,9 +317,10 @@ impl<T, F> TextureManager<T, F> {
         C: IColor,
         R: IRect,
         V: IVec2,
-        IR: IRenderer<Font = F, Texture = T>,
+        IR: IRenderer<Font = F, Texture = T, Color = C, Rectangle = R, Vector2 = V>,
     {
         let provider = VisualComponentProvider {
+            project_path,
             fonts: &mut self.fonts,
             images: &mut self.images,
             marker: PhantomData,
@@ -397,12 +416,13 @@ impl<T, F> TextureManager<T, F> {
     pub fn load_font<R: IRenderer<Font = F>>(
         &mut self,
         renderer: &mut R,
+        project_path: &Path,
         path: &String,
         sizes: &[u32],
         characters: &str,
     ) -> bool {
         self.fonts
-            .batch_load_font(renderer, path, sizes, characters)
+            .batch_load_font(renderer, project_path, path, sizes, characters)
     }
 
     /// checks if a font with the given pathis loaded
@@ -419,9 +439,10 @@ impl<T, F> TextureManager<T, F> {
     pub fn load_image<R: IRenderer<Texture = T>>(
         &mut self,
         renderer: &mut R,
+        project_path: &Path,
         path: &String,
     ) -> bool {
-        let path_buf = PathBuf::from(path);
+        let path_buf = project_path.join(path);
         let image = if let Ok(i) = renderer.load_image(&path_buf) {
             i
         } else {
@@ -442,4 +463,3 @@ impl<T, F> TextureManager<T, F> {
         self.images = Default::default();
     }
 }
-

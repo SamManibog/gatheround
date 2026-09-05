@@ -12,20 +12,19 @@ use crate::{
 pub trait IRenderer {
     type Texture;
     type Font;
+    type Color: IColor;
+    type Rectangle: IRect;
+    type Vector2: IVec2;
 
     /// compile a visual into a to-scale and magnified texture, assuming the given magnification dimensions
     /// image_provider maps a name to an image, all image names provided in the visual are valid,
     /// but may panic if a name not in the provided visual info is used
-    fn compile_visual<C, R, V>(
+    fn compile_visual(
         &mut self,
-        visual: &VisualInfo<C, R, V>,
-        magnification_dimensions: V,
+        visual: &VisualInfo<Self::Color, Self::Rectangle, Self::Vector2>,
+        magnification_dimensions: Self::Vector2,
         visual_component_provider: VisualComponentProvider<'_, Self::Font, Self::Texture>,
-    ) -> Result<TextureInfo<Self::Texture>, String>
-    where
-        C: IColor,
-        R: IRect,
-        V: IVec2;
+    ) -> Result<TextureInfo<Self::Texture>, String>;
 
     /// loads a font into an acceptable format, given a path to its font file
     /// return a result with a message for an error
@@ -36,9 +35,9 @@ pub trait IRenderer {
     /// return a result with a message for an error
     fn load_image(&mut self, path: &Path) -> Result<Self::Texture, String>;
 
-    /// draws a board to the screen
-    fn draw_board<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable>(
+    /// draws a board to a texture
+    fn draw_board<S: IConvexShape + FromLuaTable>(
         &mut self,
-        board: &BoardManager<R, V, S, Self::Texture, Self::Font>,
-    );
+        board: &BoardManager<Self::Rectangle, Self::Vector2, S, Self::Texture, Self::Font>,
+    ) -> Self::Texture;
 }

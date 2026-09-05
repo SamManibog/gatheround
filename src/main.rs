@@ -1,7 +1,7 @@
-use gatheround::raylib_integrations::RaylibEditor;
-
 fn main() {
-    RaylibEditor::run_standalone(
-        std::env::current_dir().expect("Could not open current directory."),
+    gatheround::raylib_integrations::run_game(
+        &std::env::current_dir()
+            .expect("Current directory does not exist.")
+            .join("lua_example"),
     );
 }

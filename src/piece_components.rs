@@ -1,9 +1,9 @@
-use mlua::Table;
+use mlua::{Table, Value};
 
 use crate::{
     color::{IColor, color_from_lua_table},
     geometry::{IRect, IVec2, rect_from_lua_table, vec2_from_lua_table},
-    lua::FromLuaTable,
+    lua::{FromLuaTable, FromLuaValue},
 };
 
 /// a transform for an image, only covers offset and scale
@@ -49,11 +49,11 @@ impl<V: IVec2> ImageTransform<V> {
         T2::from_other(vector.scaled(self.scale).add(self.offset))
     }
 
-    pub fn transform_rect<R1: IRect, R2: IRect>(&self, rect: R1) -> R2 {
+    pub fn transform_rect<R: IRect>(&self, rect: R) -> R {
         let min: (f32, f32) = self.transform_vector(rect.min::<(f32, f32)>());
         let max: (f32, f32) = self.transform_vector(rect.max::<(f32, f32)>());
 
-        R2::from_min_max(min, max)
+        R::from_min_max(min, max)
     }
 
     pub fn transform_other<V1: IVec2, V2: IVec2>(
@@ -165,14 +165,14 @@ pub struct TextboxInfo<C: IColor, R: IRect> {
     pub align: TextAlign,
 
     /// the font's size, None for automatic
-    pub font_size: Option<u32>,
+    pub size: Option<u32>,
 
     /// the font's line spacing as a percent of font height
     /// None for automatic
-    pub line_spacing: Option<f32>,
+    pub spacing: Option<f32>,
 
     /// the font's identifier, maybe a path or name
-    pub font_family: String,
+    pub font: String,
 
     /// the font's color
     pub color: C,
@@ -199,51 +199,63 @@ impl<C: IColor, R: IRect> FromLuaTable for TextboxInfo<C, R> {
             return Err("Invalid text field.".to_string());
         };
 
-        let align = match TextAlign::try_from_string(
-            &table
-                .raw_get::<String>("align")
-                .unwrap_or("centercenter".to_string()),
-        ) {
-            Ok(a) => a,
-            Err(msg) => return Err(format!("Invalid align field: {msg}")),
+        let align = match table.raw_get::<mlua::Value>("align") {
+            Ok(a) => {
+                if a == Value::Nil {
+                    TextAlign::CenterCenter
+                } else {
+                    match String::try_from_lua_value(&a) {
+                        Ok(s) => match TextAlign::try_from_string(&s) {
+                            Ok(a) => a,
+                            Err(msg) => return Err(format!("Invalid align field: {msg}")),
+                        },
+                        Err(msg) => return Err(format!("Invalid align field: {msg}")),
+                    }
+                }
+            }
+            Err(_) => return Err(format!("Invalid align field.")),
         };
 
-        let font_size = match table.raw_get::<mlua::Value>("font_size") {
+        let size = match table.raw_get::<mlua::Value>("size") {
             Ok(mlua::Value::Nil) => None,
             Ok(mlua::Value::Number(x)) => Some(x.clamp(1.0, u32::MAX as f64) as u32),
             Ok(mlua::Value::Integer(x)) => Some(x.clamp(1, u32::MAX as i64) as u32),
             Err(_) | Ok(_) => return Err(format!("Invalid size field, must be nil or numeric.")),
         };
 
-        let line_spacing = match table.raw_get::<mlua::Value>("line_spacing") {
+        let spacing = match table.raw_get::<mlua::Value>("spacing") {
             Ok(mlua::Value::Nil) => None,
             Ok(mlua::Value::Number(x)) => Some(x.max(1.0) as f32),
             Ok(mlua::Value::Integer(x)) => Some(x.max(1) as f32),
-            Err(_) | Ok(_) => return Err(format!("Invalid size field, must be nil or numeric.")),
+            Err(_) | Ok(_) => return Err(format!("Invalid spacing field, must be nil or numeric.")),
         };
 
-        let font_family = if let Ok(t) = table.raw_get::<String>("font") {
+        let font = if let Ok(t) = table.raw_get::<String>("font") {
             t
         } else {
             return Err("Invalid font field.".to_string());
         };
 
-        let color = if let Ok(color_table) = table.raw_get::<Table>("color") {
-            match color_from_lua_table(&color_table) {
-                Ok(c) => c,
-                Err(msg) => return Err(format!("Invalid color field: {msg}")),
+        let color = if let Ok(color_table_opt) = table.raw_get::<Option<Table>>("color") {
+            if let Some(color_table) = color_table_opt {
+                match color_from_lua_table(&color_table) {
+                    Ok(c) => c,
+                    Err(msg) => return Err(format!("Invalid pattern_color field: {msg}")),
+                }
+            } else {
+                C::from_rgba(0, 0, 0, 255)
             }
         } else {
-            return Err("Invalid color field.".to_string());
+            return Err("Invalid pattern_color field.".to_string());
         };
 
         Ok(Self {
             rect,
             text,
             align,
-            font_size,
-            line_spacing,
-            font_family,
+            size,
+            spacing,
+            font,
             color,
         })
     }
@@ -271,6 +283,60 @@ impl PatternType {
             ),
         }
     }
+
+    pub fn default_weight(&self) -> f32 {
+        match self {
+            Self::Solid => 0.0,
+            Self::Checkers => 10.0,
+            Self::Stripes => 10.0,
+            Self::Dots => 8.0,
+        }
+    }
+
+    pub fn default_spacing(&self) -> f32 {
+        match self {
+            Self::Solid => 0.0,
+            Self::Checkers => 0.0,
+            Self::Stripes => 10.0,
+            Self::Dots => 8.0,
+        }
+    }
+
+    pub fn default_angle(&self) -> f32 {
+        match self {
+            Self::Solid => 0.0,
+            Self::Checkers => 0.0,
+            Self::Stripes => 45.0,
+            Self::Dots => 45.0,
+        }
+    }
+
+    pub fn default_offset<V: IVec2>(&self) -> V {
+        match self {
+            Self::Solid => V::from_xy(0.0, 0.0),
+            Self::Checkers => V::from_xy(0.0, 0.0),
+            Self::Stripes => V::from_xy(0.0, 0.0),
+            Self::Dots => V::from_xy(0.0, 0.0),
+        }
+    }
+
+    pub fn default_pattern_color<C: IColor>(&self) -> C {
+        match self {
+            Self::Solid => C::from_rgba(0, 0, 0, 0),
+            Self::Checkers => C::from_rgba(0, 0, 0, 0),
+            Self::Stripes => C::from_rgba(0, 0, 0, 0),
+            Self::Dots => C::from_rgba(0, 0, 0, 0),
+        }
+    }
+
+    pub fn default_background_color<C: IColor>(&self) -> C {
+        match self {
+            Self::Solid => C::from_rgba(255, 255, 255, 255),
+            Self::Checkers => C::from_rgba(255, 255, 255, 255),
+            Self::Stripes => C::from_rgba(255, 255, 255, 255),
+            Self::Dots => C::from_rgba(255, 255, 255, 255),
+        }
+    }
 }
 
 /// information for a pattern
@@ -289,6 +355,7 @@ pub struct PatternInfo<C: IColor, R: IRect, V: IVec2> {
     pub spacing: f32,
 
     /// the angle of pattern elements
+    /// in degrees
     pub angle: f32,
 
     /// the offset of pattern elements
@@ -300,6 +367,33 @@ pub struct PatternInfo<C: IColor, R: IRect, V: IVec2> {
 
     /// the color of the background
     pub background_color: C,
+}
+
+impl<C: IColor, R: IRect, V: IVec2> PatternInfo<C, R, V> {
+    /// returns the offset recomputed based on the pattern
+    pub fn true_offset(&self) -> V {
+        match self.pattern {
+            PatternType::Solid => V::from_xy(0.0, 0.0),
+            PatternType::Checkers => {
+                let repetition_length = (self.weight + self.spacing) * 2.0;
+                V::from_xy(
+                    self.offset.x() % repetition_length,
+                    self.offset.y() % repetition_length,
+                )
+            }
+            PatternType::Stripes => {
+                let repetition_length = self.weight + self.spacing;
+                V::from_xy(self.offset.x() % repetition_length, 0.0)
+            }
+            PatternType::Dots => {
+                let repetition_length = self.weight + self.spacing;
+                V::from_xy(
+                    self.offset.x() % repetition_length,
+                    self.offset.y() % repetition_length,
+                )
+            }
+        }
+    }
 }
 
 impl<C: IColor, R: IRect, V: IVec2> FromLuaTable for PatternInfo<C, R, V> {
@@ -323,50 +417,64 @@ impl<C: IColor, R: IRect, V: IVec2> FromLuaTable for PatternInfo<C, R, V> {
             return Err("Invalid pattern field.".to_string());
         };
 
-        let weight = if let Ok(val) = table.raw_get::<f32>("weight") {
-            val
+        let weight = if let Ok(val) = table.raw_get::<Option<f32>>("weight") {
+            val.unwrap_or(pattern.default_weight())
         } else {
             return Err("Invalid weight field.".to_string());
         };
 
-        let spacing = if let Ok(val) = table.raw_get::<f32>("spacing") {
-            val
+        let spacing = if let Ok(val) = table.raw_get::<Option<f32>>("spacing") {
+            val.unwrap_or(pattern.default_spacing())
         } else {
             return Err("Invalid spacing field.".to_string());
         };
 
-        let angle = if let Ok(val) = table.raw_get::<f32>("angle") {
-            val
+        let angle = if let Ok(val) = table.raw_get::<Option<f32>>("angle") {
+            val.unwrap_or(pattern.default_angle())
         } else {
             return Err("Invalid angle field.".to_string());
         };
 
-        let offset = if let Ok(offset_table) = table.raw_get::<Table>("offset") {
-            match vec2_from_lua_table(&offset_table) {
-                Ok(val) => val,
-                Err(msg) => return Err(format!("Invalid offset field: {msg}")),
+        let offset = if let Ok(offset_table_opt) = table.raw_get::<Option<Table>>("offset") {
+            if let Some(offset_table) = offset_table_opt {
+                match vec2_from_lua_table(&offset_table) {
+                    Ok(val) => val,
+                    Err(msg) => return Err(format!("Invalid offset field: {msg}")),
+                }
+            } else {
+                pattern.default_offset()
             }
         } else {
             return Err("Invalid offset field.".to_string());
         };
 
-        let pattern_color = if let Ok(color_table) = table.raw_get::<Table>("pattern_color") {
-            match color_from_lua_table(&color_table) {
-                Ok(c) => c,
-                Err(msg) => return Err(format!("Invalid pattern_color field: {msg}")),
-            }
-        } else {
-            return Err("Invalid pattern_color field.".to_string());
-        };
+        let pattern_color =
+            if let Ok(color_table_opt) = table.raw_get::<Option<Table>>("pattern_color") {
+                if let Some(color_table) = color_table_opt {
+                    match color_from_lua_table(&color_table) {
+                        Ok(c) => c,
+                        Err(msg) => return Err(format!("Invalid pattern_color field: {msg}")),
+                    }
+                } else {
+                    pattern.default_pattern_color()
+                }
+            } else {
+                return Err("Invalid pattern_color field.".to_string());
+            };
 
-        let background_color = if let Ok(color_table) = table.raw_get::<Table>("background_color") {
-            match color_from_lua_table(&color_table) {
-                Ok(c) => c,
-                Err(msg) => return Err(format!("Invalid background_color field: {msg}")),
-            }
-        } else {
-            return Err("Invalid background_color field.".to_string());
-        };
+        let background_color =
+            if let Ok(color_table_opt) = table.raw_get::<Option<Table>>("background_color") {
+                if let Some(color_table) = color_table_opt {
+                    match color_from_lua_table(&color_table) {
+                        Ok(c) => c,
+                        Err(msg) => return Err(format!("Invalid background_color field: {msg}")),
+                    }
+                } else {
+                    pattern.default_background_color()
+                }
+            } else {
+                return Err("Invalid background_color field.".to_string());
+            };
 
         Ok(Self {
             rect,
@@ -450,7 +558,7 @@ impl<C: IColor, R: IRect, V: IVec2> VisualInfo<C, R, V> {
     /// an iterator over all font names referenced in this visual
     pub fn font_iter(&self) -> impl Iterator<Item = &String> {
         self.components.iter().filter_map(|c| match c {
-            VisualComponent::Textbox(t) => Some(&t.font_family),
+            VisualComponent::Textbox(t) => Some(&t.font),
             _ => None,
         })
     }
@@ -542,7 +650,16 @@ impl<C: IColor, R: IRect, V: IVec2> FromLuaTable for VisualInfo<C, R, V> {
             components.push(component);
         }
 
-        Ok(Self { components })
+        if components.is_empty() {
+            match VisualComponent::try_from_lua_table(table) {
+                Ok(component) => Ok(Self {
+                    components: vec![component],
+                }),
+                Err(msg) => Err(msg),
+            }
+        } else {
+            Ok(Self { components })
+        }
     }
 }
 

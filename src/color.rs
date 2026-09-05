@@ -27,24 +27,42 @@ fn channel_from_lua(value: &mlua::Value) -> Result<u8, String> {
 /// attempt to get a color from a lua table
 pub fn color_from_lua_table<C: IColor>(table: &Table) -> Result<C, String> {
     let r = match table.raw_get("r") {
-        Ok(val) => val,
-        Err(msg) => return Err(format!("Invalid r channel: {msg}")),
+        Ok(val) => match channel_from_lua(&val) {
+            Ok(v) => v,
+            Err(msg) => return Err(format!("Invalid r channel: {msg}")),
+        },
+        Err(_) => return Err(format!("Invalid r channel.")),
     };
 
     let g = match table.raw_get("g") {
-        Ok(val) => val,
-        Err(msg) => return Err(format!("Invalid g channel: {msg}")),
+        Ok(val) => match channel_from_lua(&val) {
+            Ok(v) => v,
+            Err(msg) => return Err(format!("Invalid g channel: {msg}")),
+        },
+        Err(_) => return Err(format!("Invalid g channel.")),
     };
 
     let b = match table.raw_get("b") {
-        Ok(val) => val,
-        Err(msg) => return Err(format!("Invalid b channel: {msg}")),
+        Ok(val) => match channel_from_lua(&val) {
+            Ok(v) => v,
+            Err(msg) => return Err(format!("Invalid b channel: {msg}")),
+        },
+        Err(_) => return Err(format!("Invalid b channel.")),
     };
 
     let a = match table.raw_get("a") {
-        Ok(val) => val,
-        Err(msg) => return Err(format!("Invalid a channel: {msg}")),
+        Ok(val) => {
+            if val == mlua::Value::Nil {
+                255
+            } else {
+                match channel_from_lua(&val) {
+                    Ok(v) => v,
+                    Err(msg) => return Err(format!("Invalid r channel: {msg}")),
+                }
+            }
+        }
+        Err(_) => return Err(format!("Invalid a channel.")),
     };
 
-    Ok(Self::from_rgba(r, g, b, a))
+    Ok(C::from_rgba(r, g, b, a))
 }

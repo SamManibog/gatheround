@@ -22,6 +22,14 @@ macro_rules! impl_as_f32 {
 }
 impl_as_f32!(i8, u8, i16, u16, i32, u32, i64, u64, isize, usize, f64);
 
+/// attempt to instance from a lua value
+pub fn vec2_from_lua_value<V: IVec2>(value: &mlua::Value) -> Result<V, String> {
+    match value {
+        Value::Table(table) => vec2_from_lua_table(&table),
+        _ => Err(format!("non-table value.")),
+    }
+}
+
 /// attempt to instance from a lua table
 pub fn vec2_from_lua_table<V: IVec2>(table: &Table) -> Result<V, String> {
     let x = match table.raw_get::<f64>("x") {
@@ -44,7 +52,7 @@ pub fn vec2_from_lua_table<V: IVec2>(table: &Table) -> Result<V, String> {
 }
 
 /// trait representing 2d vectors
-pub trait IVec2: Sized + Clone + Copy + PartialEq {
+pub trait IVec2: std::fmt::Debug + Sized + Clone + Copy + PartialEq {
     /// instance this from an x and y coordinate
     fn from_xy(x: f32, y: f32) -> Self;
 
@@ -61,6 +69,21 @@ pub trait IVec2: Sized + Clone + Copy + PartialEq {
     /// create an instance from this one, setting y value
     fn with_y(self, y: f32) -> Self {
         Self::from_xy(self.x(), y)
+    }
+
+    /// create an isntance from this one, negating x value
+    fn neg_x(self) -> Self {
+        Self::from_xy(-self.x(), self.y())
+    }
+
+    /// create an isntance from this one, negating y value
+    fn neg_y(self) -> Self {
+        Self::from_xy(self.x(), -self.y())
+    }
+
+    /// create an isntance from this one where both x and y components are non-negative
+    fn abs(&self) -> Self {
+        Self::from_xy(self.x().abs(), self.y().abs())
     }
 
     /// create an isntance from this one, modifying x value by the given delta
@@ -209,8 +232,8 @@ pub trait IRect: Sized + Clone + Copy {
         let pos: V = other.position();
         let dim: V = other.dimensions();
         let new_pos = (
-            pos.x().clamp(min.x(), max.x() - dim.x()), 
-            pos.y().clamp(min.y(), max.y() - dim.y())
+            pos.x().clamp(min.x(), max.x() - dim.x()),
+            pos.y().clamp(min.y(), max.y() - dim.y()),
         );
 
         Self::from_position_dimension(new_pos, dim)
@@ -222,8 +245,8 @@ pub trait IRect: Sized + Clone + Copy {
         let max: V = self.max();
 
         V::from_xy(
-            point.x().clamp(min.x(), max.x()), 
-            point.y().clamp(min.y(), max.y())
+            point.x().clamp(min.x(), max.x()),
+            point.y().clamp(min.y(), max.y()),
         )
     }
 
@@ -242,7 +265,7 @@ pub trait IRect: Sized + Clone + Copy {
         Self::from_position_dimension::<(f32, f32), (f32, f32)>(other.min(), other.dimensions())
     }
 
-    /// creates the rectangle that contains two rectangles
+    /// creates a rectangle that contains this and another rectangle
     fn bounding<R2: IRect>(self, r2: &R2) -> Self {
         let r1_min = self.min::<(f32, f32)>();
         let r2_min = r2.min::<(f32, f32)>();
@@ -250,7 +273,7 @@ pub trait IRect: Sized + Clone + Copy {
         let r2_max = r2.max::<(f32, f32)>();
 
         let min = (r1_min.x().min(r2_min.x()), r1_min.y().min(r2_min.y()));
-        let max = (r1_max.x().min(r2_max.x()), r1_max.y().min(r2_max.y()));
+        let max = (r1_max.x().max(r2_max.x()), r1_max.y().max(r2_max.y()));
 
         Self::from_min_max(min, max)
     }
@@ -645,7 +668,10 @@ pub trait IRect: Sized + Clone + Copy {
 /// a transform made up of an offset and angle
 #[derive(Debug, Clone, Copy)]
 pub struct Transform<V: IVec2> {
+    /// translation
     pub offset: V,
+
+    /// angle in RADIANS
     pub angle: f32,
 }
 
@@ -681,12 +707,12 @@ impl<V: IVec2> FromLuaTable for Transform<V> {
     fn try_from_lua_table(table: &Table) -> Result<Self, String> {
         let offset = vec2_from_lua_table(table)?;
 
-        let angle = match table.raw_get::<f64>("angle") {
+        let angle = match table.raw_get::<Option<f64>>("angle") {
             Ok(value) => value,
             Err(_) => {
                 return Err("Invalid angle field.".to_string());
             }
-        } as f32;
+        }.unwrap_or(0.0) as f32;
 
         Ok(Self { offset, angle })
     }
@@ -989,6 +1015,29 @@ fn minowski_support_2d<V: IVec2, S: IConvexShape, T: IConvexShape>(
 #[derive(Debug, Clone)]
 pub struct ConvexHull<V: IVec2>(Vec<V>);
 
+impl<V: IVec2> FromLuaTable for ConvexHull<V> {
+    fn try_from_lua_table(table: &Table) -> Result<Self, String> {
+        // parse points from lua table
+        let mut points = Vec::new();
+        for (i, point_opt) in table.sequence_values::<Value>().enumerate() {
+            if let Ok(point) = point_opt {
+                match vec2_from_lua_value(&point) {
+                    Ok(p) => points.push(p),
+                    Err(msg) => return Err(format!("Invalid point at index {}: {msg}", i + 1)),
+                }
+            } else {
+                return Err(format!("Invalid point at index {}.", i + 1));
+            }
+        }
+
+        if let Some(s) = Self::from_points(&mut points) {
+            Ok(s)
+        } else {
+            Err(format!("Convex Hull must have at least 3 unique points"))
+        }
+    }
+}
+
 impl<V: IVec2> ConvexHull<V> {
     /// creates a convex hull of three points, uniformly distributed about the origin
     pub fn new() -> Self {
@@ -1005,12 +1054,8 @@ impl<V: IVec2> ConvexHull<V> {
 
     /// attempts to create a convex hull from a list of vectors, fails if there
     /// are less than 3 points
-    pub fn new_from_points(points: &mut [V]) -> Option<Self> {
-        if points.len() < 3 {
-            None
-        } else {
-            Some(Self(monotone_convex_hull(points)))
-        }
+    pub fn from_points(points: &mut [V]) -> Option<Self> {
+        Some(Self(monotone_convex_hull(points)?))
     }
 
     /// returns the list of points
@@ -1042,7 +1087,7 @@ impl<V: IVec2> ConvexHull<V> {
     /// inserts a point into this hull
     pub fn insert(&mut self, point: V) {
         self.0.push(point);
-        self.0 = monotone_convex_hull(&mut self.0);
+        self.0 = monotone_convex_hull(&mut self.0).unwrap();
     }
 }
 
@@ -1054,11 +1099,13 @@ impl<V: IVec2> IConvexShape for ConvexHull<V> {
 
 /// computes the convex hull of a list of vec2s using andrew's monotone chain algorithm
 /// the returned points will be in counterclockwise order
-/// will panic if the following conditions are not met:
+/// may fail if the following conditions are not met:
 ///  - all points are finite
-///  - there are at leaste 3 points
-pub fn monotone_convex_hull<V: IVec2>(points: &mut [V]) -> Vec<V> {
-    assert!(points.len() >= 3);
+///  - there are at least 3 unique points
+pub fn monotone_convex_hull<V: IVec2>(points: &mut [V]) -> Option<Vec<V>> {
+    if points.len() < 3 {
+        return None;
+    }
 
     // sort points by x, then y
     points.sort_unstable_by(|a, b| {
@@ -1097,5 +1144,6 @@ pub fn monotone_convex_hull<V: IVec2>(points: &mut [V]) -> Vec<V> {
     lower.pop();
     upper.pop();
     lower.append(&mut upper);
-    lower
+
+    if lower.len() < 3 { None } else { Some(lower) }
 }

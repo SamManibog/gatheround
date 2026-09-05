@@ -1,14 +1,20 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    path::Path,
+};
 
 use mlua::{Table, Value};
 
 use crate::{
+    color::IColor,
     ecs::{
         DenseComponentManager, DenseSet, Entity, EntityTrait, NamedEntityManager, ResourceManager,
     },
     geometry::{self, CollisionShape, IConvexShape, IRect, IVec2, Transform},
     lua::{FromLuaTable, FromLuaValue, vector_from_lua_value},
+    piece_components::VisualInfo,
     quadtree::QuadTree,
+    renderer::IRenderer,
     resources::{TextureEntity, TextureManager},
 };
 
@@ -134,7 +140,7 @@ pub struct PieceIR<S: IConvexShape + FromLuaTable, V: IVec2> {
     pub name: Option<String>,
 
     /// optional texture (invisible pieces are allowed for gameplay reasons)
-    pub texture: Option<EntityIdentifier<TextureEntity>>,
+    pub texture: Option<String>,
 
     /// the transform for the piece
     pub transform: Transform<V>,
@@ -177,13 +183,13 @@ impl<S: IConvexShape + FromLuaTable, V: IVec2> FromLuaTable for PieceIR<S, V> {
             if let Value::Nil = val {
                 None
             } else {
-                match EntityIdentifier::try_from_lua_value(&val) {
+                match String::try_from_lua_value(&val) {
                     Ok(t) => Some(t),
-                    Err(msg) => return Err(format!("Invalid texture field: {msg}")),
+                    Err(msg) => return Err(format!("Invalid name field: {msg}")),
                 }
             }
         } else {
-            return Err(format!("Invalid texture field."));
+            return Err(format!("Invalid name field."));
         };
 
         let transform = if let Ok(val) = table.raw_get::<Value>("transform") {
@@ -274,10 +280,6 @@ impl Default for CategoryManager {
 }
 
 impl CategoryManager {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// adds categories to a piece
     pub fn add_categories(&mut self, piece: PieceEntity, categories: &[String]) {
         let piece_categories = if let Some(val) = self.piece_categories.get_mut(piece) {
@@ -304,13 +306,35 @@ impl CategoryManager {
         }
     }
 
-    /// removes categories from a piece
+    /// sets the categories of a piece
+    pub fn set_categories(&mut self, piece: PieceEntity, categories: &[String]) {
+        self.clear_categories(piece);
+        self.add_categories(piece, categories);
+    }
+
+    /// clears all categories from a piece
+    pub fn clear_categories(&mut self, piece: PieceEntity) {
+        let piece_categories = if let Some(val) = self.piece_categories.remove(piece) {
+            val
+        } else {
+            return;
+        };
+
+        for category_entity in piece_categories.iter() {
+            let category_collection = self.category_collections.get_mut(category_entity).unwrap();
+            category_collection.remove(piece);
+            if category_collection.is_empty() {
+                self.category_collections.remove(category_entity);
+            }
+        }
+    }
+
+    /// removes specific categories from a piece
     pub fn remove_categories(&mut self, piece: PieceEntity, categories: &[String]) {
         let piece_categories = if let Some(val) = self.piece_categories.get_mut(piece) {
             val
         } else {
-            self.piece_categories.insert(piece, DenseSet::new());
-            self.piece_categories.get_mut(piece).unwrap()
+            return;
         };
 
         for category in categories.iter() {
@@ -374,10 +398,6 @@ impl Default for DrawLayerManager {
 }
 
 impl DrawLayerManager {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     fn decrement_ref_count(draw_layer_refs: &mut BTreeMap<i32, usize>, layer: i32) {
         if let Some(refs) = draw_layer_refs.get_mut(&layer) {
             *refs = refs.saturating_sub(1);
@@ -410,6 +430,10 @@ impl DrawLayerManager {
             Self::decrement_ref_count(&mut self.draw_layer_refs, *old_layer);
             *old_layer = layer;
             Self::increment_ref_count(&mut self.draw_layer_refs, layer);
+        } else {
+            // handle case where piece does not yet exist in this manager
+            self.piece_draw_layers.insert(entity, layer);
+            Self::increment_ref_count(&mut self.draw_layer_refs, layer);
         }
     }
 
@@ -435,10 +459,6 @@ impl Default for CollisionLayerManager {
 }
 
 impl CollisionLayerManager {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// increments the ref count for the layer with the given name
     /// returns the corresponding layer entity
     pub fn increment_count(&mut self, layer: &String) -> CollisionLayerEntity {
@@ -481,10 +501,10 @@ pub struct QuadTreeManager<R: IRect> {
 }
 
 impl<R: IRect> QuadTreeManager<R> {
-    pub fn new(quadtree_rect: R) -> Self {
+    pub fn new<V: IVec2>(dimensions: V) -> Self {
         Self {
             aabbs: Default::default(),
-            quadtree: QuadTree::new(quadtree_rect),
+            quadtree: QuadTree::new(R::from_position_dimension((0.0, 0.0), dimensions)),
         }
     }
 
@@ -573,6 +593,23 @@ pub struct BoardManager<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F
 }
 
 impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V, S, T, F> {
+    pub fn new(dimensions: V) -> Self {
+        Self {
+            texture_resources: Default::default(),
+            collision_shape_resources: Default::default(),
+            collision_layers: Default::default(),
+            draw_layers: Default::default(),
+            categories: Default::default(),
+            piece_entity_manager: Default::default(),
+            stacks: Default::default(),
+            piece_textures: Default::default(),
+            draw_order: Default::default(),
+            piece_transforms: Default::default(),
+            piece_colliders: Default::default(),
+            quadtree: QuadTreeManager::new(dimensions),
+        }
+    }
+
     pub fn validate_shape_ir(&self, ir: &CollisionShapeIR<S>) -> Result<(), String> {
         if let CollisionShapeIR::Identifier(i) = ir {
             match &i {
@@ -606,18 +643,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
         }
 
         if let Some(texture) = &ir.texture {
-            match &texture {
-                EntityIdentifier::Entity(e) => {
-                    if !self.texture_resources.contains_texture(*e) {
-                        return Err(format!("No texture with id {} exists.", e.id()));
-                    }
-                }
-                EntityIdentifier::Name(n) => {
-                    if !self.texture_resources.contains_texture_name(n) {
-                        return Err(format!("No texture with name {n} exists."));
-                    }
-                }
-            }
+            self.is_texture_valid(texture)?
         }
 
         for collider in &ir.colliders {
@@ -676,33 +702,23 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
     }
 
     /// checks if a texture is valid
-    pub fn is_texture_valid(&self, texture: EntityIdentifier<TextureEntity>) -> Result<(), String> {
-        match texture {
-            EntityIdentifier::Entity(e) => {
-                if !self.texture_resources.contains_texture(e) {
-                    return Err(format!("No texture has ID {}.", e.id()));
-                }
-            }
-
-            EntityIdentifier::Name(n) => {
-                if !self.texture_resources.contains_texture_name(&n) {
-                    return Err(format!("No texture has name {n}."));
-                }
-            }
+    pub fn is_texture_valid(&self, texture: &String) -> Result<(), String> {
+        if !self.texture_resources.contains_texture_name(&texture) {
+            Err(format!("No texture has name {texture}."))
+        } else {
+            Ok(())
         }
-
-        Ok(())
     }
 
     /// sets the texture of a piece without checking whether the or texture is valid
-    pub fn set_piece_texture(
+    pub fn set_texture(
         &mut self,
         piece: EntityIdentifier<PieceEntity>,
-        texture: Option<EntityIdentifier<TextureEntity>>,
+        texture: Option<String>,
     ) -> Result<(), String> {
         let piece = self.is_piece_valid(piece.clone())?;
         if let Some(t) = &texture {
-            self.is_texture_valid(t.clone())?;
+            self.is_texture_valid(t)?;
         }
 
         self.set_piece_texture_unchecked(piece, texture);
@@ -710,21 +726,15 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
     }
 
     /// sets the texture of a piece without checking whether the or texture is valid
-    fn set_piece_texture_unchecked(
-        &mut self,
-        piece: PieceEntity,
-        texture: Option<EntityIdentifier<TextureEntity>>,
-    ) {
+    fn set_piece_texture_unchecked(&mut self, piece: PieceEntity, texture: Option<String>) {
         if let Some(identifier) = &texture {
             // change to a texture
 
             // determine texture entity
-            let new_texture = match identifier {
-                EntityIdentifier::Entity(e) => *e,
-                EntityIdentifier::Name(name) => {
-                    self.texture_resources.get_texture_entity(&name).unwrap()
-                }
-            };
+            let new_texture = self
+                .texture_resources
+                .get_texture_entity(identifier)
+                .unwrap();
 
             // modify texture
             if let Some(old_texture) = self.piece_textures.get_mut(piece) {
@@ -736,18 +746,88 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             };
         } else {
             // remove texture
-            self.piece_textures.remove(piece).is_some();
+            let _ = self.piece_textures.remove(piece).is_some();
         }
     }
 
-    /// sets the piece's transform
-    pub fn set_piece_transform(
+    /// sets the piece or stacks transform
+    pub fn set_transform(
         &mut self,
         piece: EntityIdentifier<PieceEntity>,
         transform: Transform<V>,
     ) -> Result<(), String> {
-        let piece = self.is_piece_valid(piece)?;
+        let piece = self.is_entity_valid(piece)?;
         self.set_piece_transform_unchecked(piece, transform);
+        Ok(())
+    }
+
+    /// sets the piece or stack's offset
+    pub fn set_position(
+        &mut self,
+        piece: EntityIdentifier<PieceEntity>,
+        offset: V,
+    ) -> Result<(), String> {
+        let piece = self.is_entity_valid(piece)?;
+
+        let angle = self.piece_transforms.get(piece).unwrap().angle;
+
+        let transform = Transform { offset, angle };
+
+        self.set_piece_transform_unchecked(piece, transform);
+        Ok(())
+    }
+
+    /// sets the piece or stack's angle
+    pub fn set_angle(
+        &mut self,
+        piece: EntityIdentifier<PieceEntity>,
+        angle: f32,
+    ) -> Result<(), String> {
+        let piece = self.is_entity_valid(piece)?;
+
+        let offset = self.piece_transforms.get(piece).unwrap().offset;
+
+        let transform = Transform { offset, angle };
+
+        self.set_piece_transform_unchecked(piece, transform);
+        Ok(())
+    }
+
+    /// sets the categories of a piece
+    pub fn set_categories(
+        &mut self,
+        piece: EntityIdentifier<PieceEntity>,
+        categories: &[String],
+    ) -> Result<(), String> {
+        let piece = self.is_piece_valid(piece)?;
+
+        self.categories.set_categories(piece, categories);
+
+        Ok(())
+    }
+
+    /// adds categories to a piece
+    pub fn add_categories(
+        &mut self,
+        piece: EntityIdentifier<PieceEntity>,
+        categories: &[String],
+    ) -> Result<(), String> {
+        let piece = self.is_piece_valid(piece)?;
+
+        self.categories.add_categories(piece, categories);
+
+        Ok(())
+    }
+
+    /// removes categories from a piece
+    pub fn remove_categories(
+        &mut self,
+        piece: EntityIdentifier<PieceEntity>,
+        categories: &[String],
+    ) -> Result<(), String> {
+        let piece = self.is_piece_valid(piece)?;
+
+        self.categories.remove_categories(piece, categories);
         Ok(())
     }
 
@@ -789,7 +869,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
     }
 
     /// sets the colliders of the pice
-    fn set_piece_colliders(
+    pub fn set_piece_colliders(
         &mut self,
         piece: EntityIdentifier<PieceEntity>,
         collider_irs: Vec<PieceColliderIR<S>>,
@@ -836,7 +916,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
         }
     }
 
-    pub fn add_piece(&mut self, ir: PieceIR<S, V>) -> Result<PieceEntity, String> {
+    pub fn create_piece(&mut self, ir: PieceIR<S, V>) -> Result<PieceEntity, String> {
         self.validate_piece_ir(&ir)?;
 
         let entity = if let Some(name) = &ir.name {
@@ -882,5 +962,60 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
 
             Some((texture, *transform, draw_layer))
         })
+    }
+
+    /// gets the dimensions of the board
+    pub fn dimensions(&self) -> V {
+        self.quadtree.rect().dimensions()
+    }
+
+    /// attempts to create a new texture, returning its entity on success
+    /// textures must be assigned a name
+    pub fn create_texture<C, IR>(
+        &mut self,
+        project_path: &Path,
+        name: String,
+        visual: &VisualInfo<C, R, V>,
+        magnification_dimensions: V,
+        renderer: &mut IR,
+    ) -> Result<(), String>
+    where
+        C: IColor,
+        IR: IRenderer<Font = F, Texture = T, Color = C, Rectangle = R, Vector2 = V>,
+    {
+        self.texture_resources.load_texture(
+            project_path,
+            Some(name.clone()),
+            visual,
+            magnification_dimensions,
+            renderer,
+        )?;
+
+        Ok(())
+    }
+
+    /// gets the name of the texture that a piece contains
+    pub fn get_texture(
+        &self,
+        piece: EntityIdentifier<PieceEntity>,
+    ) -> Result<Option<&String>, String> {
+        let piece = self.is_piece_valid(piece)?;
+
+        Ok(self
+            .piece_textures
+            .get(piece)
+            .map(|i| self.texture_resources.get_texture_name(*i).unwrap()))
+    }
+
+    /// gets the texture by name
+    pub fn get_texture_resource(&self, name: &String) -> Option<&T> {
+        self.texture_resources
+            .get_texture_by_name(name)
+            .map(|t| &t.texture)
+    }
+
+    /// checks if a texture with the given name exists
+    pub fn contains_texture(&self, name: &String) -> bool {
+        self.texture_resources.contains_texture_name(name)
     }
 }
