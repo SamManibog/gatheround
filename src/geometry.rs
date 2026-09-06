@@ -52,7 +52,7 @@ pub fn vec2_from_lua_table<V: IVec2>(table: &Table) -> Result<V, String> {
 }
 
 /// trait representing 2d vectors
-pub trait IVec2: std::fmt::Debug + Sized + Clone + Copy + PartialEq {
+pub trait IVec2: std::fmt::Debug + Sized + Clone + Copy + PartialEq + IConvexShape {
     /// instance this from an x and y coordinate
     fn from_xy(x: f32, y: f32) -> Self;
 
@@ -189,6 +189,12 @@ impl IVec2 for (f32, f32) {
     }
 }
 
+impl IConvexShape for (f32, f32) {
+    fn furthest_point<V: IVec2>(&self, _direction: V) -> V {
+        V::from_other(*self)
+    }
+}
+
 /// attempt to instance from a lua table
 pub fn rect_from_lua_table<R: IRect>(table: &Table) -> Result<R, String> {
     let position = vec2_from_lua_table::<(f32, f32)>(table)?;
@@ -213,10 +219,25 @@ pub fn rect_from_lua_table<R: IRect>(table: &Table) -> Result<R, String> {
     ))
 }
 
-pub trait IRect: Sized + Clone + Copy {
+pub trait IRect: Sized + Clone + Copy + IConvexShape {
     /// creates an instance from the top left corner and dimensions
     /// should panic if dimensions are negative
     fn from_position_dimension<V1: IVec2, V2: IVec2>(position: V1, dimensions: V2) -> Self;
+
+    /// gets the furthest point on the rectangle in the direction of the given vector
+    fn furthest_point<V: IVec2>(&self, direction: V) -> V {
+        let mut max_point = self.top_left::<V>();
+        let mut max_dot = max_point.dot(direction);
+
+        for point in [self.top_right::<V>(), self.bottom_right(), self.bottom_left()] {
+            let dot = point.dot(direction);
+            if dot > max_dot {
+                max_dot = dot;
+                max_point = point;
+            }
+        }
+        max_point
+    }
 
     /// creates an instance from the center and dimensions
     fn from_center_dimension<V1: IVec2, V2: IVec2>(center: V1, dimensions: V2) -> Self {
@@ -712,7 +733,8 @@ impl<V: IVec2> FromLuaTable for Transform<V> {
             Err(_) => {
                 return Err("Invalid angle field.".to_string());
             }
-        }.unwrap_or(0.0) as f32;
+        }
+        .unwrap_or(0.0) as f32;
 
         Ok(Self { offset, angle })
     }
@@ -900,6 +922,18 @@ impl<S: IConvexShape> CollisionShape<S> {
             rotated.position::<V>().add(transform.offset),
             rotated.dimensions::<V>(),
         )
+    }
+
+    /// check if this shape contains a point
+    pub fn contains_point<V: IVec2>(&self, transform: Transform<V>, point: V) -> bool {
+        for hull in &self.0 {
+            let tshape = TransformedConvexShapeRef::new(hull, &transform);
+
+            if gjk_intersects(&tshape, &point) {
+                return true;
+            }
+        }
+        false
     }
 
     /// check if this shape intersects with another, given each shape's transform

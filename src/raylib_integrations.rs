@@ -13,19 +13,19 @@ use raylib::{
     },
     ffi::{Color, KeyboardKey, Rectangle, TraceLogLevel, Vector2},
     text::{Font, RaylibFont},
-    texture::{RaylibTexture2D, RenderTexture2D},
+    texture::{Image, RaylibTexture2D, RenderTexture2D},
 };
 
 use crate::{
-    board::BoardManager,
+    board::{BoardManager, PlayerColor},
     color::IColor,
-    geometry::{ConvexHull, IRect, IVec2},
+    geometry::{ConvexHull, IConvexShape, IRect, IVec2},
     lua::get_game_lua_instance,
     piece_components::{
         Alignment, ImageTransform, PatternInfo, PatternType, TextboxInfo, TextureInfo,
         VisualComponent, VisualInfo,
     },
-    renderer::IRenderer,
+    renderer::{GlobalAssets, IRenderer},
     resources::VisualComponentProvider,
 };
 
@@ -42,6 +42,12 @@ impl IVec2 for Vector2 {
 
     fn y(&self) -> f32 {
         self.y
+    }
+}
+
+impl IConvexShape for Vector2 {
+    fn furthest_point<V: IVec2>(&self, _direction: V) -> V {
+        V::from_other(*self)
     }
 }
 
@@ -69,6 +75,12 @@ impl IRect for Rectangle {
             width: dimensions.x(),
             height: dimensions.y(),
         }
+    }
+}
+
+impl IConvexShape for Rectangle {
+    fn furthest_point<V: IVec2>(&self, direction: V) -> V {
+        IRect::furthest_point(self, direction)
     }
 }
 
@@ -769,7 +781,7 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
         }
     }
 
-    fn load_image(&mut self, path: &std::path::Path) -> Result<RenderTexture2D, String> {
+    fn load_texture(&mut self, path: &std::path::Path) -> Result<RenderTexture2D, String> {
         match self.rl.load_texture(&self.thread, &path.to_string_lossy()) {
             Ok(nonrender_texture) => {
                 let mut texture = match self.rl.load_render_texture(
@@ -778,9 +790,9 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
                     nonrender_texture.height as u32,
                 ) {
                     Ok(t) => t,
-                    Err(_) => {
+                    Err(msg) => {
                         return Err(format!(
-                            "Could not load image from '{}': image is too large.",
+                            "Could not load texture from '{}': {msg}",
                             path.to_string_lossy()
                         ));
                     }
@@ -792,23 +804,47 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
                 Ok(texture)
             }
 
-            Err(err) => match err {
-                raylib::error::LoadTextureError::TextureFromFileFailed { path } => Err(format!(
-                    "Could not load image from '{}': either file does not exist or the format is not supported.",
-                    path
-                )),
+            Err(err) => Err(format!(
+                "Could not load texture from '{}': {err}",
+                path.to_string_lossy()
+            )),
+        }
+    }
 
-                _ => Err(format!(
-                    "Failed to load image from '{}'",
-                    path.to_string_lossy()
-                )),
-            },
+    fn load_texture_from_memory(
+        &mut self,
+        filetype: &str,
+        bytes: &[u8],
+    ) -> Result<Self::Texture, String> {
+        let image = match Image::load_image_from_mem(filetype, bytes) {
+            Ok(i) => i,
+            Err(msg) => return Err(format!("Failed to load texture from memory: {msg}")),
+        };
+        match self.rl.load_texture_from_image(&self.thread, &image) {
+            Ok(nonrender_texture) => {
+                let mut texture = match self.rl.load_render_texture(
+                    self.thread,
+                    nonrender_texture.width as u32,
+                    nonrender_texture.height as u32,
+                ) {
+                    Ok(t) => t,
+                    Err(msg) => return Err(format!("Failed to load texture from memory: {msg}")),
+                };
+                self.rl
+                    .draw_texture_mode(self.thread, &mut texture, |mut painter| {
+                        painter.draw_texture(&nonrender_texture, 0, 0, Color::WHITE);
+                    });
+                Ok(texture)
+            }
+
+            Err(msg) => Err(format!("Failed to load texture from memory: {msg}")),
         }
     }
 
     fn draw_board<S: crate::geometry::IConvexShape + crate::lua::FromLuaTable>(
         &mut self,
         board: &crate::board::BoardManager<Rectangle, Vector2, S, Self::Texture, Self::Font>,
+        assets: &GlobalAssets<Self::Texture>,
     ) -> RenderTexture2D {
         let output_dimensions = board.dimensions();
         let mut output_texture = self
@@ -865,6 +901,7 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
             .draw_texture_mode(self.thread, &mut output_texture, |mut painter| {
                 painter.clear_background(Color::BLANK);
 
+                // draw regular layers
                 for layer in draw_layers.values() {
                     let src_rect = Rectangle {
                         x: 0.0,
@@ -877,6 +914,50 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
                         src_rect,
                         Vector2::from_xy(0.0, 0.0),
                         Color::WHITE,
+                    );
+                }
+
+                // draw grabbed elements (again)
+                for (texture, transform) in board.grab_target_draw_iter() {
+                    let src_rect = Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        width: texture.width() as f32,
+                        height: -texture.height() as f32,
+                    };
+                    let dst_rect = Rectangle::from_position_dimension(
+                        transform.offset,
+                        src_rect.dimensions::<Vector2>().neg_y(),
+                    );
+                    painter.draw_texture_pro(
+                        &texture,
+                        src_rect,
+                        dst_rect,
+                        dst_rect.dimensions::<Vector2>().scaled(0.5),
+                        transform.angle.to_degrees(),
+                        Color::WHITE,
+                    );
+                }
+
+                // draw player hands
+                for (texture, position, tint) in board.player_draw_iter::<Color>(&assets) {
+                    let src_rect = Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        width: texture.width() as f32,
+                        height: -texture.height() as f32,
+                    };
+                    let dst_rect = Rectangle::from_position_dimension(
+                        position,
+                        src_rect.dimensions::<Vector2>().neg_y(),
+                    );
+                    painter.draw_texture_pro(
+                        &texture,
+                        src_rect,
+                        dst_rect,
+                        dst_rect.dimensions::<Vector2>().scaled(0.5),
+                        0.0,
+                        tint,
                     );
                 }
             });
@@ -1189,17 +1270,17 @@ impl TextCommandBuffer {
 
 /// runs a game editor from the given project path
 pub fn run_game(project_path: &Path) {
-    let board_dimensions = Vector2::from_xy(700.0, 700.0);
     let padding = Vector2::from_xy(20.0, 20.0);
+    let test_player = PlayerColor::Lime;
 
     // initialize game resources
-    let board_cell = Rc::new(RefCell::new(BoardManager::<
-        Rectangle,
-        Vector2,
-        ConvexHull<Vector2>,
-        RenderTexture2D,
-        Font,
-    >::new(board_dimensions)));
+    let board_dimensions = Vector2::from_xy(1000.0, 1000.0);
+    let mut board =
+        BoardManager::<Rectangle, Vector2, ConvexHull<Vector2>, RenderTexture2D, Font>::new(
+            board_dimensions,
+        );
+    let _ = board.add_player(test_player, "Player".to_string());
+    let board_cell = Rc::new(RefCell::new(board));
 
     // initialize raylib
     callbacks::set_trace_log_callback(|level, msg| match level {
@@ -1219,6 +1300,8 @@ pub fn run_game(project_path: &Path) {
         .build();
     rl.set_exit_key(None);
     rl.set_target_fps(FRAME_RATE);
+    let global_assets = GlobalAssets::new(&mut RaylibRenderer::from_handle(&mut rl, &thread));
+
     let mut command_buffer = TextCommandBuffer::new(&mut rl, &thread);
     let rl_cell = Rc::new(RefCell::new(rl));
     let thread_cell = Rc::new(RefCell::new(thread));
@@ -1235,39 +1318,59 @@ pub fn run_game(project_path: &Path) {
 
         // run update cycle
         {
-            let mut rl = rl_cell.borrow_mut();
-            if let Some(cmd) = command_buffer.update(&mut rl) {
-                match lua.load(cmd).eval::<mlua::MultiValue>() {
-                    Ok(v) => println!("GOTVALUE FROM COMMAND!: {:?}", v),
-                    Err(e) => {
-                        println!("GOT ERROR FROM COMMAND! NOT YET SURE WHAT TO DO WITH IT:\n{e}")
+            // update hand position TEMPORARY DELETE LATER
+            {
+                let rl = rl_cell.borrow_mut();
+                let mut board = board_cell.borrow_mut();
+                if rl.is_mouse_button_pressed(raylib::ffi::MouseButton::MOUSE_BUTTON_LEFT) {
+                    board.attempt_grab(test_player);
+                } else if rl.is_mouse_button_pressed(raylib::ffi::MouseButton::MOUSE_BUTTON_RIGHT) {
+                    board.attempt_drop(test_player);
+                }
+                board.set_player_position(test_player, rl.get_mouse_position().sub(padding));
+            }
+
+            // update commands
+            {
+                let mut rl = rl_cell.borrow_mut();
+                if let Some(cmd) = command_buffer.update(&mut rl) {
+                    match lua.load(cmd).eval::<mlua::MultiValue>() {
+                        Ok(v) => println!("GOTVALUE FROM COMMAND!: {:?}", v),
+                        Err(e) => {
+                            println!(
+                                "GOT ERROR FROM COMMAND! NOT YET SURE WHAT TO DO WITH IT:\n{e}"
+                            )
+                        }
                     }
                 }
             }
         }
 
         // run draw cycle
-        let mut rl = rl_cell.borrow_mut();
-        let thread = thread_cell.borrow();
-        let mut rl_renderer = RaylibRenderer::from_handle(&mut rl, &thread);
+        {
+            let mut rl = rl_cell.borrow_mut();
+            let thread = thread_cell.borrow();
+            let mut rl_renderer = RaylibRenderer::from_handle(&mut rl, &thread);
 
-        let board_texture = rl_renderer.draw_board(&board_cell.borrow());
+            let board_texture = rl_renderer.draw_board(&board_cell.borrow(), &global_assets);
 
-        rl.draw(&thread, |mut painter| {
-            painter.clear_background(Color::RAYWHITE);
+            rl.draw(&thread, |mut painter| {
+                painter.clear_background(Color::RAYWHITE);
 
-            let src_rect = Rectangle::from_position_dimension((0.0, 0.0), board_dimensions.neg_y());
-            let dst_rect = Rectangle::from_position_dimension(padding, board_dimensions);
-            painter.draw_texture_pro(
-                &board_texture,
-                src_rect,
-                dst_rect,
-                Vector2::from_xy(0.0, 0.0),
-                0.0,
-                Color::WHITE,
-            );
+                let src_rect =
+                    Rectangle::from_position_dimension((0.0, 0.0), board_dimensions.neg_y());
+                let dst_rect = Rectangle::from_position_dimension(padding, board_dimensions);
+                painter.draw_texture_pro(
+                    &board_texture,
+                    src_rect,
+                    dst_rect,
+                    Vector2::from_xy(0.0, 0.0),
+                    0.0,
+                    Color::WHITE,
+                );
 
-            command_buffer.draw(Vector2::from_xy(40.0, 40.0), &mut painter);
-        });
+                command_buffer.draw(Vector2::from_xy(40.0, 40.0), &mut painter);
+            });
+        }
     }
 }

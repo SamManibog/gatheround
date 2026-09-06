@@ -1,4 +1,4 @@
-local texture = create_texture("red_square", {
+create_texture("red_square", {
     type = "pattern",
     pattern = "solid",
     rect = {
@@ -14,7 +14,7 @@ local texture = create_texture("red_square", {
     }
 })
 
-local texture = create_texture("blue_square", {
+create_texture("red_king", {
     {
         type = "pattern",
         pattern = "solid",
@@ -75,10 +75,30 @@ create_piece({
     name = "red_piece",
     transform = { x = 400, y = 400 },
     texture = "red_square",
+    colliders = {
+        {
+            shape = {{
+                {x=-40,y=-40,},
+                {x=40,y=-40,},
+                {x=-40,y=40,},
+                {x=40,y=40,},
+            }},
+            layer = "grab",
+        }
+    },
 })
 
 create_piece({
     name = "blue_piece",
     transform = { x = 200, y = 200 },
-    texture = "blue_square",
+    texture = "red_king",
+    colliders = {{
+        shape = {{
+            {x=-60,y=-60,},
+            {x=60,y=-60,},
+            {x=-60,y=60,},
+            {x=60,y=60,},
+        }},
+        layer = "grab",
+    }},
 })

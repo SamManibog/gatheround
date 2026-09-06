@@ -11,6 +11,48 @@ pub trait IColor: Clone {
     }
 
     fn from_rgba(r: u8, g: u8, b: u8, a: u8) -> Self;
+
+    fn try_from_hex_str(hex: &str) -> Option<Self> {
+        if hex.is_empty() {
+            return None;
+        }
+
+        let hex = if hex.chars().next().unwrap() == '#' {
+            &hex[1..]
+        } else {
+            hex
+        };
+
+        if !hex.is_ascii() {
+            return None;
+        }
+
+        if hex.len() == 8 {
+            let mut out = [0; 4];
+
+            for i in 0..4 {
+                out[i] = match u8::from_str_radix(&hex[(i * 2)..(i * 2 + 2)], 16) {
+                    Ok(u) => u,
+                    Err(_) => return None,
+                };
+            }
+
+            Some(Self::from_rgba(out[0], out[1], out[2], out[3]))
+        } else if hex.len() == 6 {
+            let mut out = [0; 3];
+
+            for i in 0..3 {
+                out[i] = match u8::from_str_radix(&hex[(i * 2)..(i * 2 + 2)], 16) {
+                    Ok(u) => u,
+                    Err(_) => return None,
+                };
+            }
+
+            Some(Self::from_rgba(out[0], out[1], out[2], 255))
+        } else {
+            None
+        }
+    }
 }
 
 /// creates a channel value from a lua value, saturating at u8 buonds

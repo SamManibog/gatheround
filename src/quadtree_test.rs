@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use eframe::egui;
 use egui::{Align2, Color32, FontId, Pos2, Resize, Stroke, Vec2};
 
-use crate::{geometry::{IRect, IVec2}, quadtree::QuadTree};
+use crate::{geometry::{IConvexShape, IRect, IVec2}, quadtree::QuadTree};
 
 impl IRect for egui::Rect {
     fn x(&self) -> f32 {
@@ -27,6 +27,12 @@ impl IRect for egui::Rect {
     }
 }
 
+impl IConvexShape for egui::Rect {
+    fn furthest_point<V: IVec2>(&self, direction: V) -> V {
+        V::from_other(direction)
+    }
+}
+
 impl IVec2 for egui::Pos2 {
     fn x(&self) -> f32 {
         self.x
@@ -41,6 +47,12 @@ impl IVec2 for egui::Pos2 {
     }
 }
 
+impl IConvexShape for egui::Pos2 {
+    fn furthest_point<V: IVec2>(&self, _direction: V) -> V {
+        V::from_other(*self)
+    }
+}
+
 impl IVec2 for egui::Vec2 {
     fn x(&self) -> f32 {
         self.x
@@ -52,6 +64,12 @@ impl IVec2 for egui::Vec2 {
 
     fn from_xy(x: f32, y: f32) -> Self {
         Self::new(x, y)
+    }
+}
+
+impl IConvexShape for egui::Vec2 {
+    fn furthest_point<V: IVec2>(&self, _direction: V) -> V {
+        V::from_other(*self)
     }
 }
 

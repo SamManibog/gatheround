@@ -9,6 +9,33 @@ use crate::{
     resources::VisualComponentProvider,
 };
 
+#[derive(Debug)]
+pub struct GlobalAssets<T> {
+    pub open_hand_texture: T,
+    pub closed_hand_texture: T,
+}
+
+const OPEN_HAND_BYTES: &[u8] = include_bytes!("open_hand.png");
+const CLOSED_HAND_BYTES: &[u8] = include_bytes!("closed_hand.png");
+
+impl<T> GlobalAssets<T> {
+    pub fn new<R: IRenderer<Texture = T>>(renderer: &mut R) -> Self {
+        let open_hand_texture = match renderer.load_texture_from_memory(".png", OPEN_HAND_BYTES) {
+            Ok(t) => t,
+            Err(msg) => panic!("Unable to load open hand texture: {msg}"),
+        };
+        let closed_hand_texture = match renderer.load_texture_from_memory(".png", CLOSED_HAND_BYTES) {
+            Ok(t) => t,
+            Err(msg) => panic!("Unable to load open hand texture: {msg}"),
+        };
+
+        Self {
+            open_hand_texture,
+            closed_hand_texture,
+        }
+    }
+}
+
 pub trait IRenderer {
     type Texture;
     type Font;
@@ -33,11 +60,20 @@ pub trait IRenderer {
 
     /// loads an image into an acceptable format
     /// return a result with a message for an error
-    fn load_image(&mut self, path: &Path) -> Result<Self::Texture, String>;
+    fn load_texture(&mut self, path: &Path) -> Result<Self::Texture, String>;
+
+    /// loads an image from memory into an acceptable format
+    /// return a result with a message for an error
+    fn load_texture_from_memory(
+        &mut self,
+        filetype: &str,
+        bytes: &[u8],
+    ) -> Result<Self::Texture, String>;
 
     /// draws a board to a texture
     fn draw_board<S: IConvexShape + FromLuaTable>(
         &mut self,
         board: &BoardManager<Self::Rectangle, Self::Vector2, S, Self::Texture, Self::Font>,
+        assets: &GlobalAssets<Self::Texture>,
     ) -> Self::Texture;
 }

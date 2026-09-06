@@ -113,7 +113,7 @@ impl<'a, F, I> VisualComponentProvider<'a, F, I> {
 
         let images = unsafe { &mut *self.images };
         let path_buf = get_image_path(self.project_path).join(path);
-        let image = if let Ok(i) = renderer.load_image(&path_buf) {
+        let image = if let Ok(i) = renderer.load_texture(&path_buf) {
             i
         } else {
             return None;
@@ -443,7 +443,7 @@ impl<T, F> TextureManager<T, F> {
         path: &String,
     ) -> bool {
         let path_buf = project_path.join(path);
-        let image = if let Ok(i) = renderer.load_image(&path_buf) {
+        let image = if let Ok(i) = renderer.load_texture(&path_buf) {
             i
         } else {
             return false;

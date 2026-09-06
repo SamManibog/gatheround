@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, VecDeque},
+    fmt::Display,
     path::Path,
 };
 
@@ -14,7 +15,7 @@ use crate::{
     lua::{FromLuaTable, FromLuaValue, vector_from_lua_value},
     piece_components::VisualInfo,
     quadtree::QuadTree,
-    renderer::IRenderer,
+    renderer::{GlobalAssets, IRenderer},
     resources::{TextureEntity, TextureManager},
 };
 
@@ -532,9 +533,325 @@ impl<R: IRect> QuadTreeManager<R> {
             .insert(piece, &|e| *self.aabbs.get(*e).unwrap());
     }
 
+    /// queries the quadtree for entity aabbs on the given point
+    pub fn query_point<V: IVec2>(&self, point: V) -> Vec<PieceEntity> {
+        self.quadtree
+            .query_point(point, &|e| *self.aabbs.get(*e).unwrap())
+    }
+
+    /// queries the quadtree for entity aabbs on the given rectangle
+    pub fn query_rect(&self, rect: R) -> Vec<PieceEntity> {
+        self.quadtree
+            .query_range(rect, &|e| *self.aabbs.get(*e).unwrap())
+    }
+
     /// gets the rectangle the quadtree occupies
     pub fn rect(&self) -> R {
         self.quadtree.aabb()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PlayerColor {
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Blue,
+    Purple,
+    Pink,
+    Lime,
+    Cyan,
+    Black,
+    White,
+    Brown,
+}
+
+impl PlayerColor {
+    pub const COLOR_COUNT: usize = 12;
+
+    pub fn into_color<C: IColor>(&self) -> C {
+        let hex = match self {
+            Self::Red => "#f16060ff",
+            Self::Orange => "#f38e41ff",
+            Self::Yellow => "#eec850ff",
+            Self::Green => "#53b976ff",
+            Self::Blue => "#63abecff",
+            Self::Purple => "#bd6dd7ff",
+            Self::Pink => "#fb9debff",
+            Self::Lime => "#b8e36cff",
+            Self::Cyan => "#7ee3e3ff",
+            Self::Black => "#4b5060ff",
+            Self::White => "#fff7eeff",
+            Self::Brown => "#a86b55ff",
+        };
+        C::try_from_hex_str(hex).unwrap()
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        let name_lower = name.to_ascii_lowercase();
+        let name_lower_str: &str = &name_lower;
+        Some(match name_lower_str {
+            "red" => Self::Red,
+            "orange" => Self::Orange,
+            "yellow" => Self::Yellow,
+            "green" => Self::Green,
+            "blue" => Self::Blue,
+            "purple" => Self::Purple,
+            "pink" => Self::Pink,
+            "lime" => Self::Lime,
+            "cyan" => Self::Cyan,
+            "black" => Self::Black,
+            "white" => Self::White,
+            "brown" => Self::Brown,
+            _ => return None,
+        })
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Red => "Red",
+            Self::Orange => "Orange",
+            Self::Yellow => "Yellow",
+            Self::Green => "Green",
+            Self::Blue => "Blue",
+            Self::Purple => "Purple",
+            Self::Pink => "Pink",
+            Self::Lime => "Lime",
+            Self::Cyan => "Cyan",
+            Self::Black => "Black",
+            Self::White => "White",
+            Self::Brown => "Brown",
+        }
+    }
+}
+
+impl Display for PlayerColor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
+impl FromLuaValue for PlayerColor {
+    fn try_from_lua_value(value: &Value) -> Result<Self, String> {
+        match String::try_from_lua_value(value) {
+            Ok(s) => match Self::from_name(&s) {
+                Some(color) => Ok(color),
+                None => Err(format!("Invalid player color '{s}'.")),
+            },
+            Err(msg) => Err(format!("Invalid player color: {msg}")),
+        }
+    }
+}
+
+impl EntityTrait for PlayerColor {
+    fn id(&self) -> u32 {
+        match self {
+            Self::Red => 0,
+            Self::Orange => 1,
+            Self::Yellow => 2,
+            Self::Green => 3,
+            Self::Blue => 4,
+            Self::Purple => 5,
+            Self::Pink => 6,
+            Self::Lime => 7,
+            Self::Cyan => 8,
+            Self::Black => 9,
+            Self::White => 10,
+            Self::Brown => 11,
+        }
+    }
+
+    fn from_id(id: usize) -> Self {
+        match id {
+            0 => Self::Red,
+            1 => Self::Orange,
+            2 => Self::Yellow,
+            3 => Self::Green,
+            4 => Self::Blue,
+            5 => Self::Purple,
+            6 => Self::Pink,
+            7 => Self::Lime,
+            8 => Self::Cyan,
+            9 => Self::Black,
+            10 => Self::White,
+            11 => Self::Brown,
+            _ => panic!("PlayerColor cannot be construccted from ids over 11."),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct PlayerManager<V: IVec2> {
+    /// player colors mapped to their screen names
+    players: DenseComponentManager<PlayerColor, String>,
+
+    /// screen names mapped to their player colors
+    colors: [String; PlayerColor::COLOR_COUNT],
+
+    /// positions of player's hands
+    positions: DenseComponentManager<PlayerColor, V>,
+
+    /// the piece being grabbed by players
+    grab_targets: DenseComponentManager<PlayerColor, PieceEntity>,
+
+    /// the player grabbing a given piece
+    rev_grab_targets: DenseComponentManager<PieceEntity, PlayerColor>,
+}
+
+impl<V: IVec2> Default for PlayerManager<V> {
+    fn default() -> Self {
+        Self {
+            players: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
+            colors: [const { String::new() }; PlayerColor::COLOR_COUNT],
+            positions: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
+            grab_targets: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
+            rev_grab_targets: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
+        }
+    }
+}
+
+impl<V: IVec2> PlayerManager<V> {
+    pub const NAME_CHAR_LIMIT: usize = 12;
+
+    /// gets the regex for valid names
+    /// has the following requirements:
+    ///  - 1-12 characters
+    ///  - only graphic characters
+    pub fn is_name_valid(name: &str) -> Result<(), String> {
+        if name.is_empty() {
+            return Err(format!("Player name must not be empty."));
+        }
+
+        let mut len = 0;
+        let mut chars = name.chars();
+        while len <= Self::NAME_CHAR_LIMIT {
+            len += 1;
+            if let Some(ch) = chars.next() {
+                if !Self::is_name_char_valid(ch) {
+                    return Err(format!(
+                        "Player names must only contain graphic characters."
+                    ));
+                }
+            } else {
+                return Ok(());
+            }
+        }
+        Err(format!("Player names must not exceed 12 characters."))
+    }
+
+    /// returns an iterator over all held pieces
+    pub fn grab_target_iter(&self) -> impl Iterator<Item = PieceEntity> {
+        self.grab_targets.component_iter().cloned()
+    }
+
+    /// returns an iterator over players and their positions
+    pub fn position_iter(&self) -> impl Iterator<Item = (PlayerColor, V)> {
+        self.positions.pairs_iter().map(|(p, t)| (p, *t))
+    }
+
+    /// checks if a character is valid for use in a name
+    /// must be a graphic character
+    pub fn is_name_char_valid(ch: char) -> bool {
+        ch.is_ascii_graphic()
+    }
+
+    /// creates a new player with the given name and color
+    pub fn new_player(&mut self, color: PlayerColor, name: String) -> Result<(), String> {
+        Self::is_name_valid(&name)?;
+        if self.players.contains(color) {
+            return Err(format!("Player color {color} is already taken."));
+        }
+        if self.colors.contains(&name) {
+            return Err(format!("Player name '{name}' is already taken."));
+        }
+
+        self.players.insert(color, name.clone());
+        self.colors[color.id() as usize] = name;
+        self.positions.insert(color, V::from_xy(0.0, 0.0));
+        Ok(())
+    }
+
+    /// gets a player color by name
+    pub fn color_of(&self, name: &String) -> Option<PlayerColor> {
+        self.colors
+            .iter()
+            .position(|n| n == name)
+            .map(|id| PlayerColor::from_id(id))
+    }
+
+    /// gets the name of a player by color
+    pub fn name_of(&self, color: PlayerColor) -> Option<&String> {
+        self.players.get(color)
+    }
+
+    /// checks if a player is contained
+    pub fn is_playing(&self, color: PlayerColor) -> bool {
+        self.players.contains(color)
+    }
+
+    /// removes a player, does nothing if the player does not exist
+    pub fn remove_player(&mut self, player: PlayerColor) {
+        self.colors[player.id() as usize] = String::new();
+        self.players.remove(player);
+        self.positions.remove(player);
+    }
+
+    /// gets the position of the given player
+    pub fn get_position(&self, player: PlayerColor) -> Option<V> {
+        self.positions.get(player).copied()
+    }
+
+    /// sets the position of the given player
+    pub fn set_position(&mut self, player: PlayerColor, pos: V) {
+        if let Some(old_pos) = self.positions.get_mut(player) {
+            *old_pos = pos;
+        }
+    }
+
+    /// checks if the player is grabbing a piece
+    pub fn is_grabbing(&self, player: PlayerColor) -> bool {
+        self.grab_targets.contains(player)
+    }
+
+    /// checks if a piece is being grabbed by any of the player
+    pub fn is_grabbed(&self, piece: PieceEntity) -> bool {
+        self.rev_grab_targets.contains(piece)
+    }
+
+    /// gets the player grabbing the given piece
+    pub fn get_grabber(&self, piece: PieceEntity) -> Option<PlayerColor> {
+        self.rev_grab_targets.get(piece).copied()
+    }
+
+    /// gets the piece that the player is grabbing
+    pub fn get_grab_target(&self, player: PlayerColor) -> Option<PieceEntity> {
+        self.grab_targets.get(player).copied()
+    }
+
+    /// sets the piece that the player is grabbing, returning the old grab target
+    /// panics if the target is already being grabbed by another player
+    pub fn set_grab_target(
+        &mut self,
+        player: PlayerColor,
+        target: Option<PieceEntity>,
+    ) -> Option<PieceEntity> {
+        if let Some(t) = target {
+            assert!(!self.rev_grab_targets.contains(t));
+            self.grab_targets.insert(player, t)
+        } else {
+            if let Some(piece) = self.grab_targets.remove(player) {
+                self.rev_grab_targets.remove(piece);
+                Some(piece)
+            } else {
+                None
+            }
+        }
+    }
+
+    /// returns an iterator over player colors and their names
+    pub fn iter(&self) -> impl Iterator<Item = (PlayerColor, &String)> {
+        self.players.pairs_iter()
     }
 }
 
@@ -542,6 +859,9 @@ pub struct BoardManager<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F
     /// textures resources that can be used
     /// unnamed textures must be uniquely owned
     texture_resources: TextureManager<T, F>,
+
+    /// player management
+    players: PlayerManager<V>,
 
     /// collision shape resources that can be referenced by pieces
     /// unnamed collision shapes must be uniquely owned
@@ -596,6 +916,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
     pub fn new(dimensions: V) -> Self {
         Self {
             texture_resources: Default::default(),
+            players: Default::default(),
             collision_shape_resources: Default::default(),
             collision_layers: Default::default(),
             draw_layers: Default::default(),
@@ -833,21 +1154,9 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
 
     /// sets the transform of a piece without checking whether the piece or transform is valid
     fn set_piece_transform_unchecked(&mut self, piece: PieceEntity, transform: Transform<V>) {
-        // clamp transform so that its origin fits in the board
-        let transform = Transform {
-            offset: self.quadtree.rect().fit_point(transform.offset),
-            angle: transform.angle,
-        };
-
-        // modify transforms
-        if let Some(old_transform) = self.piece_transforms.get_mut(piece) {
-            *old_transform = transform;
-        } else {
-            self.piece_transforms.insert(piece, transform.clone());
-        }
-
-        // update the quadtree if necessary
         if let Some(colliders) = self.piece_colliders.get(piece) {
+            // if this piece has colliders...
+            // ensure they are fully contained by the board
             let initial_aabb: R = geometry::compute_advanced_aabb(
                 &transform,
                 colliders
@@ -855,16 +1164,28 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
                     .map(|c| self.collision_shape_resources.get(c.shape).unwrap()),
             )
             .unwrap();
-
-            // ensure colliders fit into the tree
             let final_aabb: R = self.quadtree.rect().fit(initial_aabb);
             let offset = final_aabb.min::<V>().sub(initial_aabb.min::<V>());
-            if offset != V::from_xy(0.0, 0.0) {
-                let transform = self.piece_transforms.get_mut(piece).unwrap();
-                transform.offset = transform.offset.add(offset);
-            }
+            let transform = Transform {
+                offset: transform.offset.add(offset),
+                angle: transform.angle,
+            };
 
-            self.quadtree.set_aabb(piece, final_aabb);
+            self.piece_transforms.insert(piece, transform);
+
+            // update quadtree only if player is not grabbed
+            // (setting aabb may insert it)
+            if !self.players.is_grabbed(piece) {
+                self.quadtree.set_aabb(piece, final_aabb);
+            }
+        } else {
+            // clamp transform so that its origin fits in the board
+            let transform = Transform {
+                offset: self.quadtree.rect().fit_point(transform.offset),
+                angle: transform.angle,
+            };
+
+            self.piece_transforms.insert(piece, transform);
         }
     }
 
@@ -891,6 +1212,8 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
         piece: PieceEntity,
         collider_irs: Vec<PieceColliderIR<S>>,
     ) {
+        self.quadtree.remove(piece);
+
         let mut colliders = Vec::new();
         for collider_ir in collider_irs {
             let shape_entity = match collider_ir.shape {
@@ -912,6 +1235,19 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             colliders.push(collider);
         }
         if !colliders.is_empty() {
+            // update quadtree if the piece is not grabbed
+            if !self.players.is_grabbed(piece) {
+                let aabb = geometry::compute_advanced_aabb(
+                    self.piece_transforms.get(piece).unwrap(),
+                    colliders
+                        .iter()
+                        .map(|c| self.collision_shape_resources.get(c.shape).unwrap()),
+                )
+                .unwrap();
+                self.quadtree.set_aabb(piece, aabb);
+            }
+
+            // set colliders
             self.piece_colliders.insert(piece, colliders);
         }
     }
@@ -935,9 +1271,9 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
 
         self.draw_order.push_back(entity);
 
-        self.set_piece_colliders_unchecked(entity, ir.colliders);
-
         self.set_piece_transform_unchecked(entity, ir.transform);
+
+        self.set_piece_colliders_unchecked(entity, ir.colliders);
 
         Ok(entity)
     }
@@ -961,6 +1297,37 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             let draw_layer = self.draw_layers.get(*m).unwrap();
 
             Some((texture, *transform, draw_layer))
+        })
+    }
+
+    /// returns an iterator over the textures of grabbed pieces and their transforms
+    /// grab targets should be drawn on top of all other pieces
+    pub fn grab_target_draw_iter(&self) -> impl Iterator<Item = (&T, Transform<V>)> {
+        self.players.grab_target_iter().filter_map(|target| {
+            let texture_entity = self.piece_textures.get(target)?;
+            let texture = &self
+                .texture_resources
+                .get_texture(*texture_entity)
+                .unwrap()
+                .texture;
+            let transform = self.piece_transforms.get(target).unwrap();
+            Some((texture, *transform))
+        })
+    }
+
+    /// returns an iterator over players, their positions, and their held pieces
+    /// players should be drawn on top of every piece
+    pub fn player_draw_iter<'a, 'b, C: IColor>(
+        &'b self,
+        global_assets: &'a GlobalAssets<T>,
+    ) -> impl Iterator<Item = (&'a T, V, C)> {
+        self.players.position_iter().map(|(color, pos)| {
+            let texture = if self.players.is_grabbing(color) {
+                &global_assets.closed_hand_texture
+            } else {
+                &global_assets.open_hand_texture
+            };
+            (texture, pos, color.into_color())
         })
     }
 
@@ -994,6 +1361,14 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
         Ok(())
     }
 
+    pub fn add_player(&mut self, color: PlayerColor, name: String) -> Result<(), String> {
+        self.players.new_player(color, name)
+    }
+
+    pub fn remove_player(&mut self, color: PlayerColor) {
+        self.players.remove_player(color);
+    }
+
     /// gets the name of the texture that a piece contains
     pub fn get_texture(
         &self,
@@ -1017,5 +1392,135 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
     /// checks if a texture with the given name exists
     pub fn contains_texture(&self, name: &String) -> bool {
         self.texture_resources.contains_texture_name(name)
+    }
+
+    /// makes a player grab or release a piece, returns true on successful operation
+    /// the operation may only fail for invalid players or if a piece is being picked up that is already
+    pub fn set_grab(&mut self, player: PlayerColor, piece: Option<PieceEntity>) -> bool {
+        if !self.players.is_playing(player) {
+            return false;
+        }
+
+        if let Some(piece) = piece {
+            if !self.piece_entity_manager.is_used(piece) {
+                return false;
+            }
+            if let Some(_) = self.players.get_grabber(piece) {
+                return false;
+            }
+
+            self.grab_piece_unchecked(player, piece);
+            true
+        } else {
+            self.drop_piece_unchecked(player);
+            true
+        }
+    }
+
+    /// attempts to grab the piece under the player, returning the grabbed entity
+    pub fn attempt_grab(&mut self, player: PlayerColor) -> Option<PieceEntity> {
+        let position = self.players.get_position(player)?;
+
+        // get colliding pieces
+        let colliding_aabbs = self.quadtree.query_point(position);
+        if colliding_aabbs.is_empty() {
+            return  None;
+        }
+        let colliding = colliding_aabbs.into_iter().filter(|piece| {
+            let transform = *self.piece_transforms.get(*piece).unwrap();
+            let shape_iter = self
+                .piece_colliders
+                .get(*piece)
+                .unwrap()
+                .iter()
+                .map(|collider| self.collision_shape_resources.get(collider.shape).unwrap());
+
+            for shape in shape_iter {
+                if shape.contains_point(transform, position) {
+                    return true;
+                }
+            }
+            false
+        });
+
+        // find the highest draw layer
+        // also if colliding is empty, return
+        let draw_layer = colliding
+            .clone()
+            .map(|piece| self.draw_layers.get(piece).unwrap())
+            .max()?;
+
+        // place all pieces in the highest draw layer into a set
+        let mut high_colliding = {
+            let high_colliding_iter = colliding.filter(|piece| self.draw_layers.get(*piece).unwrap() == draw_layer);
+            let mut set = DenseSet::new();
+            for piece in high_colliding_iter {
+                set.insert(piece);
+            }
+            set
+        };
+
+        // get and return the highest piece
+        for piece in self.draw_order.iter().copied() {
+            high_colliding.remove(piece);
+
+            if high_colliding.is_empty() {
+                self.grab_piece_unchecked(player, piece);
+                return Some(piece)
+            }
+        }
+
+        unreachable!()
+    }
+
+    /// makes a player grab a given piece
+    /// no checks are performed to ensure that the piece or player is valid and not already grabbed
+    fn grab_piece_unchecked(&mut self, player: PlayerColor, piece: PieceEntity) {
+        // disable collisions
+        self.quadtree.remove(piece);
+
+        // actually grabbing the piece
+        self.players.set_grab_target(player, Some(piece));
+
+        // move player inbounds
+        self.set_player_position(player, self.players.get_position(player).unwrap());
+    }
+
+    /// makes the player drop is held piece
+    pub fn attempt_drop(&mut self, player: PlayerColor) {
+        if self.players.is_grabbing(player) {
+            self.drop_piece_unchecked(player);
+        }
+    }
+
+    /// makes a player drop the piece it is grabbing
+    /// no checks are performed to ensure that the player is valid
+    fn drop_piece_unchecked(&mut self, player: PlayerColor) {
+        // drop the piece
+        let piece = self.players.set_grab_target(player, None).unwrap();
+
+        // re-enable collisions by performing an operation that updates the quadtree
+        self.set_piece_transform_unchecked(piece, *self.piece_transforms.get(piece).unwrap());
+    }
+
+    /// sets the position of the player
+    pub fn set_player_position(&mut self, player: PlayerColor, position: V) {
+        if !self.players.is_playing(player) {
+            return;
+        }
+
+        // clamp position to board boundaries
+        let position = self.quadtree.rect().fit_point(position);
+
+        if let Some(piece) = self.players.get_grab_target(player) {
+            // update grabbed piece position
+            // use updated position to set player position (preserves clamping rules)
+            let _ = self.set_position(EntityIdentifier::Entity(piece), position);
+            self.players
+                .set_position(player, self.piece_transforms.get(piece).unwrap().offset);
+        } else {
+            // update player position
+            self.players.set_position(player, position);
+        }
     }
 }

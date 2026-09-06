@@ -180,6 +180,7 @@ impl<E: EntityTrait> EntityManager<E> {
 
 /// efficiently maintains a set of entities potentially with associated names
 /// entities can be accessed by their names
+#[derive(Debug)]
 pub struct NamedEntityManager<E: EntityTrait> {
     /// the list of available entity ids
     free_entity_queue: VecDeque<E>,
@@ -287,7 +288,7 @@ impl<E: EntityTrait> NamedEntityManager<E> {
     pub fn iter(&self) -> impl Iterator<Item = (E, Option<&String>)> {
         self.entity_names.pairs_iter().map(|(e, n)| {
             let name = if n.is_empty() { None } else { Some(n) };
-            (*e, name)
+            (e, name)
         })
     }
 }
@@ -488,13 +489,13 @@ impl<E: EntityTrait, T> DenseComponentManager<E, T> {
     }
 
     /// returns an iterator over entities and their associated components
-    pub fn pairs_iter(&self) -> impl Iterator<Item = (&E, &T)> {
-        self.entities.iter().zip(self.data.iter())
+    pub fn pairs_iter(&self) -> impl Iterator<Item = (E, &T)> {
+        self.entities.iter().copied().zip(self.data.iter())
     }
 
     /// returns an iterator over entities and their associated components mutably
-    pub fn pairs_iter_mut(&mut self) -> impl Iterator<Item = (&E, &mut T)> {
-        self.entities.iter().zip(self.data.iter_mut())
+    pub fn pairs_iter_mut(&mut self) -> impl Iterator<Item = (E, &mut T)> {
+        self.entities.iter().copied().zip(self.data.iter_mut())
     }
 }
 
