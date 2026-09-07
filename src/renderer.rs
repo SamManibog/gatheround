@@ -4,9 +4,9 @@ use crate::{
     board::BoardManager,
     color::IColor,
     geometry::{IConvexShape, IRect, IVec2},
+    intermediate_representations::VisualInfo,
     lua::FromLuaTable,
-    piece_components::{TextureInfo, VisualInfo},
-    resources::VisualComponentProvider,
+    resources::{TextureInfo, VisualComponentProvider},
 };
 
 #[derive(Debug)]
@@ -24,7 +24,8 @@ impl<T> GlobalAssets<T> {
             Ok(t) => t,
             Err(msg) => panic!("Unable to load open hand texture: {msg}"),
         };
-        let closed_hand_texture = match renderer.load_texture_from_memory(".png", CLOSED_HAND_BYTES) {
+        let closed_hand_texture = match renderer.load_texture_from_memory(".png", CLOSED_HAND_BYTES)
+        {
             Ok(t) => t,
             Err(msg) => panic!("Unable to load open hand texture: {msg}"),
         };
@@ -74,7 +75,13 @@ pub trait IRenderer {
     /// draws a board to a texture
     fn draw_board(
         &mut self,
-        board: &BoardManager<Self::Rectangle, Self::Vector2, Self::ConvexShape, Self::Texture, Self::Font>,
+        board: &BoardManager<
+            Self::Rectangle,
+            Self::Vector2,
+            Self::ConvexShape,
+            Self::Texture,
+            Self::Font,
+        >,
         assets: &GlobalAssets<Self::Texture>,
     ) -> Self::Texture;
 }

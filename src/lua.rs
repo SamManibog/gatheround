@@ -13,10 +13,10 @@ use raylib::{
 };
 
 use crate::{
-    board::{BoardManager, EntityIdentifier, PieceIR},
+    board::BoardManager,
     ecs::EntityTrait,
     geometry::{ConvexHull, IConvexShape, IRect, IVec2, Transform, vec2_from_lua_table},
-    piece_components::VisualInfo,
+    intermediate_representations::{EntityIdentifier, PieceIR, VisualInfo},
     raylib_integrations::RaylibRenderer,
 };
 

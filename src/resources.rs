@@ -1,16 +1,20 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    fmt::Display,
     marker::PhantomData,
     path::{Path, PathBuf},
 };
 
+use mlua::Value;
 use roaring::RoaringBitmap;
 
 use crate::{
     color::IColor,
-    ecs::{Entity, ResourceManager},
+    ecs::{DenseComponentManager, DenseSet, Entity, EntityTrait, ResourceManager},
     geometry::{IRect, IVec2},
-    piece_components::{TextureInfo, VisualInfo},
+    intermediate_representations::VisualInfo,
+    lua::FromLuaValue,
+    quadtree::QuadTree,
     renderer::IRenderer,
 };
 
@@ -51,6 +55,657 @@ pub fn font_paths(&self) -> PathBuf {
 
 pub fn get_image_path(project_path: &Path) -> PathBuf {
     project_path.join("images")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PieceEntityMarker;
+pub type PieceEntity = Entity<PieceEntityMarker>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CollisionShapeEntityMarker;
+pub type CollisionShapeEntity = Entity<CollisionShapeEntityMarker>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CollisionLayerEntityMarker;
+pub type CollisionLayerEntity = Entity<CollisionLayerEntityMarker>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PieceCategoryEntityMarker;
+pub type CategoryEntity = Entity<PieceCategoryEntityMarker>;
+
+#[derive(Debug, Clone)]
+pub struct PieceCollider {
+    /// the collision shape entity
+    pub shape: CollisionShapeEntity,
+
+    /// the collision layers this collider "cares about"
+    pub layer: CollisionLayerEntity,
+}
+
+#[derive(Debug, Clone)]
+pub struct StackInfo<V: IVec2> {
+    /// the pieces on this stack from deepest to topmost
+    pub pieces: Vec<PieceEntity>,
+
+    /// the offset of each piece from the bottom most piece
+    pub offset: V,
+
+    /// the radius of the snapping cirle
+    pub snap_radius: f32,
+}
+
+pub struct CategoryManager {
+    /// the categories of pieces that may exist
+    /// maps categories to the list of pieces in that category
+    /// we must ensure that all categories are named entities
+    category_collections: ResourceManager<CategoryEntity, DenseSet<PieceEntity>>,
+
+    /// the categories assigned to each piece
+    piece_categories: DenseComponentManager<PieceEntity, DenseSet<CategoryEntity>>,
+}
+
+impl Default for CategoryManager {
+    fn default() -> Self {
+        Self {
+            category_collections: Default::default(),
+            piece_categories: Default::default(),
+        }
+    }
+}
+
+impl CategoryManager {
+    /// adds categories to a piece
+    pub fn add_categories(&mut self, piece: PieceEntity, categories: &[String]) {
+        let piece_categories = if let Some(val) = self.piece_categories.get_mut(piece) {
+            val
+        } else {
+            self.piece_categories.insert(piece, DenseSet::new());
+            self.piece_categories.get_mut(piece).unwrap()
+        };
+
+        for category in categories.iter() {
+            let (category_entity, category_collection) =
+                if let Some(e) = self.category_collections.get_entity(&category) {
+                    (e, self.category_collections.get_mut(e).unwrap())
+                } else {
+                    let entity = self
+                        .category_collections
+                        .add_named(category.clone(), DenseSet::new())
+                        .unwrap();
+                    (entity, self.category_collections.get_mut(entity).unwrap())
+                };
+
+            piece_categories.insert(category_entity);
+            category_collection.insert(piece);
+        }
+    }
+
+    /// sets the categories of a piece
+    pub fn set_categories(&mut self, piece: PieceEntity, categories: &[String]) {
+        self.clear_categories(piece);
+        self.add_categories(piece, categories);
+    }
+
+    /// clears all categories from a piece
+    pub fn clear_categories(&mut self, piece: PieceEntity) {
+        let piece_categories = if let Some(val) = self.piece_categories.remove(piece) {
+            val
+        } else {
+            return;
+        };
+
+        for category_entity in piece_categories.iter() {
+            let category_collection = self.category_collections.get_mut(category_entity).unwrap();
+            category_collection.remove(piece);
+            if category_collection.is_empty() {
+                self.category_collections.remove(category_entity);
+            }
+        }
+    }
+
+    /// removes specific categories from a piece
+    pub fn remove_categories(&mut self, piece: PieceEntity, categories: &[String]) {
+        let piece_categories = if let Some(val) = self.piece_categories.get_mut(piece) {
+            val
+        } else {
+            return;
+        };
+
+        for category in categories.iter() {
+            if let Some(category_entity) = self.category_collections.get_entity(&category) {
+                let category_collection =
+                    self.category_collections.get_mut(category_entity).unwrap();
+
+                piece_categories.remove(category_entity);
+                category_collection.remove(piece);
+
+                if category_collection.is_empty() {
+                    self.category_collections.remove(category_entity);
+                }
+            }
+        }
+    }
+
+    /// returns an iterator over all existing categories
+    pub fn categories(&self) -> impl Iterator<Item = &String> {
+        self.category_collections
+            .identifier_iter()
+            .map(|(_, n)| n.unwrap())
+    }
+
+    /// returns an iterator over all categories assigned to a piece
+    pub fn piece_categories(&self, piece: PieceEntity) -> Option<impl Iterator<Item = &String>> {
+        let categories = self.piece_categories.get(piece)?;
+        Some(
+            categories
+                .iter()
+                .map(|e| self.category_collections.get_name(e).unwrap()),
+        )
+    }
+
+    /// returns an iterator over all pieces in a category
+    pub fn category_pieces(&self, category: &String) -> Option<impl Iterator<Item = PieceEntity>> {
+        if let Some(collection) = self.category_collections.get_by_name(category) {
+            Some(collection.iter())
+        } else {
+            None
+        }
+    }
+}
+
+pub struct DrawLayerManager {
+    /// ref counts for draw layers
+    /// allows linear time construction of render layers during render operations
+    draw_layer_refs: BTreeMap<i32, usize>,
+
+    /// the draw layers of each piece
+    piece_draw_layers: DenseComponentManager<PieceEntity, i32>,
+}
+
+impl Default for DrawLayerManager {
+    fn default() -> Self {
+        Self {
+            draw_layer_refs: Default::default(),
+            piece_draw_layers: Default::default(),
+        }
+    }
+}
+
+impl DrawLayerManager {
+    fn decrement_ref_count(draw_layer_refs: &mut BTreeMap<i32, usize>, layer: i32) {
+        if let Some(refs) = draw_layer_refs.get_mut(&layer) {
+            *refs = refs.saturating_sub(1);
+            if *refs <= 0 {
+                draw_layer_refs.remove(&layer);
+            }
+        }
+    }
+
+    fn increment_ref_count(draw_layer_refs: &mut BTreeMap<i32, usize>, layer: i32) {
+        let refs = draw_layer_refs.entry(layer).or_insert(0);
+        *refs += 1;
+    }
+
+    pub fn remove_piece(&mut self, entity: PieceEntity) {
+        if let Some(layer) = self.piece_draw_layers.remove(entity) {
+            Self::decrement_ref_count(&mut self.draw_layer_refs, layer);
+        }
+    }
+
+    pub fn set(&mut self, entity: PieceEntity, layer: i32) {
+        // handle case where piece already exists in this manager
+        if let Some(old_layer) = self.piece_draw_layers.get_mut(entity) {
+            // if no layer change occurs do nothing
+            if *old_layer == layer {
+                return;
+            }
+
+            // update refcounts and values
+            Self::decrement_ref_count(&mut self.draw_layer_refs, *old_layer);
+            *old_layer = layer;
+            Self::increment_ref_count(&mut self.draw_layer_refs, layer);
+        } else {
+            // handle case where piece does not yet exist in this manager
+            self.piece_draw_layers.insert(entity, layer);
+            Self::increment_ref_count(&mut self.draw_layer_refs, layer);
+        }
+    }
+
+    pub fn get(&self, entity: PieceEntity) -> Option<i32> {
+        self.piece_draw_layers.get(entity).copied()
+    }
+
+    pub fn layer_iter(&self) -> impl Iterator<Item = i32> {
+        self.draw_layer_refs.keys().copied()
+    }
+}
+
+pub struct CollisionLayerManager {
+    layers: ResourceManager<CollisionLayerEntity, usize>,
+}
+
+impl Default for CollisionLayerManager {
+    fn default() -> Self {
+        Self {
+            layers: Default::default(),
+        }
+    }
+}
+
+impl CollisionLayerManager {
+    /// increments the ref count for the layer with the given name
+    /// returns the corresponding layer entity
+    pub fn increment_count(&mut self, layer: &String) -> CollisionLayerEntity {
+        if let Some(entity) = self.layers.get_entity(layer) {
+            *self.layers.get_mut(entity).unwrap() += 1;
+            entity
+        } else {
+            self.layers.add_named(layer.clone(), 1).unwrap()
+        }
+    }
+
+    /// gets the entity corresponding to the layer
+    pub fn get_entity(&self, layer: &String) -> Option<CollisionLayerEntity> {
+        self.layers.get_entity(layer)
+    }
+
+    /// gets the name corresponding to the layer
+    pub fn get_name(&self, layer: CollisionLayerEntity) -> Option<&String> {
+        self.layers.get_name(layer)
+    }
+
+    /// decrements the ref count for the layer
+    pub fn decrement_count(&mut self, layer: CollisionLayerEntity) {
+        if let Some(count) = self.layers.get_mut(layer) {
+            *count -= 1;
+
+            if *count <= 0 {
+                self.layers.remove(layer);
+            }
+        }
+    }
+
+    /// returns an iterator over all stored collision layers
+    pub fn layer_iter(&self) -> impl Iterator<Item = &String> {
+        self.layers.identifier_iter().map(|(_, n)| n.unwrap())
+    }
+
+    /// returns the number of collision layers contained
+    pub fn len(&self) -> usize {
+        self.layers.len()
+    }
+}
+
+pub struct QuadTreeManager<R: IRect> {
+    /// aabbs for each piece
+    aabbs: DenseComponentManager<PieceEntity, R>,
+
+    /// the quadtree used to track collisions
+    quadtree: QuadTree<PieceEntity, R>,
+}
+
+impl<R: IRect> QuadTreeManager<R> {
+    pub fn new<V: IVec2>(dimensions: V) -> Self {
+        Self {
+            aabbs: Default::default(),
+            quadtree: QuadTree::new(R::from_position_dimension((0.0, 0.0), dimensions)),
+        }
+    }
+
+    /// removes the piece from this quadtree, returning its aabb if its
+    pub fn remove(&mut self, piece: PieceEntity) -> Option<R> {
+        let old_aabb = self.aabbs.remove(piece)?;
+        self.quadtree
+            .extract_from_regions_on_point(old_aabb.center::<(f32, f32)>(), &|e| *e == piece);
+        Some(old_aabb)
+    }
+
+    /// sets the aabb for the given piece
+    pub fn set_aabb(&mut self, piece: PieceEntity, aabb: R) {
+        if let Some(old_aabb) = self.aabbs.get_mut(piece) {
+            // update and remove old aabb from quadtree
+            self.quadtree
+                .extract_from_regions_on_point(old_aabb.center::<(f32, f32)>(), &|e| *e == piece);
+            *old_aabb = aabb;
+        } else {
+            self.aabbs.insert(piece, aabb.clone());
+        }
+
+        // insert new aabb into quadtree
+        self.quadtree
+            .insert(piece, &|e| *self.aabbs.get(*e).unwrap());
+    }
+
+    /// queries the quadtree for entity aabbs on the given point
+    pub fn query_point<V: IVec2>(&self, point: V) -> Vec<PieceEntity> {
+        self.quadtree
+            .query_point(point, &|e| *self.aabbs.get(*e).unwrap())
+    }
+
+    /// queries the quadtree for entity aabbs on the given rectangle
+    pub fn query_rect(&self, rect: R) -> Vec<PieceEntity> {
+        self.quadtree
+            .query_range(rect, &|e| *self.aabbs.get(*e).unwrap())
+    }
+
+    /// gets the rectangle the quadtree occupies
+    pub fn rect(&self) -> R {
+        self.quadtree.aabb()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PlayerColor {
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Blue,
+    Purple,
+    Pink,
+    Lime,
+    Cyan,
+    Black,
+    White,
+    Brown,
+}
+
+impl PlayerColor {
+    pub const COLOR_COUNT: usize = 12;
+
+    pub fn into_color<C: IColor>(&self) -> C {
+        let hex = match self {
+            Self::Red => "#f16060ff",
+            Self::Orange => "#f38e41ff",
+            Self::Yellow => "#eec850ff",
+            Self::Green => "#53b976ff",
+            Self::Blue => "#63abecff",
+            Self::Purple => "#bd6dd7ff",
+            Self::Pink => "#fb9debff",
+            Self::Lime => "#b8e36cff",
+            Self::Cyan => "#7ee3e3ff",
+            Self::Black => "#4b5060ff",
+            Self::White => "#fff7eeff",
+            Self::Brown => "#a86b55ff",
+        };
+        C::try_from_hex_str(hex).unwrap()
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        let name_lower = name.to_ascii_lowercase();
+        let name_lower_str: &str = &name_lower;
+        Some(match name_lower_str {
+            "red" => Self::Red,
+            "orange" => Self::Orange,
+            "yellow" => Self::Yellow,
+            "green" => Self::Green,
+            "blue" => Self::Blue,
+            "purple" => Self::Purple,
+            "pink" => Self::Pink,
+            "lime" => Self::Lime,
+            "cyan" => Self::Cyan,
+            "black" => Self::Black,
+            "white" => Self::White,
+            "brown" => Self::Brown,
+            _ => return None,
+        })
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Red => "Red",
+            Self::Orange => "Orange",
+            Self::Yellow => "Yellow",
+            Self::Green => "Green",
+            Self::Blue => "Blue",
+            Self::Purple => "Purple",
+            Self::Pink => "Pink",
+            Self::Lime => "Lime",
+            Self::Cyan => "Cyan",
+            Self::Black => "Black",
+            Self::White => "White",
+            Self::Brown => "Brown",
+        }
+    }
+}
+
+impl Display for PlayerColor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
+impl FromLuaValue for PlayerColor {
+    fn try_from_lua_value(value: &Value) -> Result<Self, String> {
+        match String::try_from_lua_value(value) {
+            Ok(s) => match Self::from_name(&s) {
+                Some(color) => Ok(color),
+                None => Err(format!("Invalid player color '{s}'.")),
+            },
+            Err(msg) => Err(format!("Invalid player color: {msg}")),
+        }
+    }
+}
+
+impl EntityTrait for PlayerColor {
+    fn id(&self) -> u32 {
+        match self {
+            Self::Red => 0,
+            Self::Orange => 1,
+            Self::Yellow => 2,
+            Self::Green => 3,
+            Self::Blue => 4,
+            Self::Purple => 5,
+            Self::Pink => 6,
+            Self::Lime => 7,
+            Self::Cyan => 8,
+            Self::Black => 9,
+            Self::White => 10,
+            Self::Brown => 11,
+        }
+    }
+
+    fn from_id(id: usize) -> Self {
+        match id {
+            0 => Self::Red,
+            1 => Self::Orange,
+            2 => Self::Yellow,
+            3 => Self::Green,
+            4 => Self::Blue,
+            5 => Self::Purple,
+            6 => Self::Pink,
+            7 => Self::Lime,
+            8 => Self::Cyan,
+            9 => Self::Black,
+            10 => Self::White,
+            11 => Self::Brown,
+            _ => panic!("PlayerColor cannot be construccted from ids over 11."),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct PlayerManager<V: IVec2> {
+    /// player colors mapped to their screen names
+    players: DenseComponentManager<PlayerColor, String>,
+
+    /// screen names mapped to their player colors
+    colors: [String; PlayerColor::COLOR_COUNT],
+
+    /// positions of player's hands
+    positions: DenseComponentManager<PlayerColor, V>,
+
+    /// the piece being grabbed by players
+    grab_targets: DenseComponentManager<PlayerColor, PieceEntity>,
+
+    /// the player grabbing a given piece
+    rev_grab_targets: DenseComponentManager<PieceEntity, PlayerColor>,
+}
+
+impl<V: IVec2> Default for PlayerManager<V> {
+    fn default() -> Self {
+        Self {
+            players: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
+            colors: [const { String::new() }; PlayerColor::COLOR_COUNT],
+            positions: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
+            grab_targets: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
+            rev_grab_targets: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
+        }
+    }
+}
+
+impl<V: IVec2> PlayerManager<V> {
+    pub const NAME_CHAR_LIMIT: usize = 12;
+
+    /// gets the regex for valid names
+    /// has the following requirements:
+    ///  - 1-12 characters
+    ///  - only graphic characters
+    pub fn is_name_valid(name: &str) -> Result<(), String> {
+        if name.is_empty() {
+            return Err(format!("Player name must not be empty."));
+        }
+
+        let mut len = 0;
+        let mut chars = name.chars();
+        while len <= Self::NAME_CHAR_LIMIT {
+            len += 1;
+            if let Some(ch) = chars.next() {
+                if !Self::is_name_char_valid(ch) {
+                    return Err(format!(
+                        "Player names must only contain graphic characters."
+                    ));
+                }
+            } else {
+                return Ok(());
+            }
+        }
+        Err(format!("Player names must not exceed 12 characters."))
+    }
+
+    /// returns an iterator over all held pieces
+    pub fn grab_target_iter(&self) -> impl Iterator<Item = PieceEntity> {
+        self.grab_targets.component_iter().cloned()
+    }
+
+    /// returns an iterator over players and their positions
+    pub fn position_iter(&self) -> impl Iterator<Item = (PlayerColor, V)> {
+        self.positions.pairs_iter().map(|(p, t)| (p, *t))
+    }
+
+    /// checks if a character is valid for use in a name
+    /// must be a graphic character
+    pub fn is_name_char_valid(ch: char) -> bool {
+        ch.is_ascii_graphic()
+    }
+
+    /// creates a new player with the given name and color
+    pub fn new_player(&mut self, color: PlayerColor, name: String) -> Result<(), String> {
+        Self::is_name_valid(&name)?;
+        if self.players.contains(color) {
+            return Err(format!("Player color {color} is already taken."));
+        }
+        if self.colors.contains(&name) {
+            return Err(format!("Player name '{name}' is already taken."));
+        }
+
+        self.players.insert(color, name.clone());
+        self.colors[color.id() as usize] = name;
+        self.positions.insert(color, V::from_xy(0.0, 0.0));
+        Ok(())
+    }
+
+    /// gets a player color by name
+    pub fn color_of(&self, name: &String) -> Option<PlayerColor> {
+        self.colors
+            .iter()
+            .position(|n| n == name)
+            .map(|id| PlayerColor::from_id(id))
+    }
+
+    /// gets the name of a player by color
+    pub fn name_of(&self, color: PlayerColor) -> Option<&String> {
+        self.players.get(color)
+    }
+
+    /// checks if a player is contained
+    pub fn is_playing(&self, color: PlayerColor) -> bool {
+        self.players.contains(color)
+    }
+
+    /// removes a player, does nothing if the player does not exist
+    pub fn remove_player(&mut self, player: PlayerColor) {
+        self.colors[player.id() as usize] = String::new();
+        self.players.remove(player);
+        self.positions.remove(player);
+    }
+
+    /// gets the position of the given player
+    pub fn get_position(&self, player: PlayerColor) -> Option<V> {
+        self.positions.get(player).copied()
+    }
+
+    /// sets the position of the given player
+    pub fn set_position(&mut self, player: PlayerColor, pos: V) {
+        if let Some(old_pos) = self.positions.get_mut(player) {
+            *old_pos = pos;
+        }
+    }
+
+    /// checks if the player is grabbing a piece
+    pub fn is_grabbing(&self, player: PlayerColor) -> bool {
+        self.grab_targets.contains(player)
+    }
+
+    /// checks if a piece is being grabbed by any of the player
+    pub fn is_grabbed(&self, piece: PieceEntity) -> bool {
+        self.rev_grab_targets.contains(piece)
+    }
+
+    /// gets the player grabbing the given piece
+    pub fn get_grabber(&self, piece: PieceEntity) -> Option<PlayerColor> {
+        self.rev_grab_targets.get(piece).copied()
+    }
+
+    /// gets the piece that the player is grabbing
+    pub fn get_grab_target(&self, player: PlayerColor) -> Option<PieceEntity> {
+        self.grab_targets.get(player).copied()
+    }
+
+    /// sets the piece that the player is grabbing, returning the old grab target
+    /// panics if the target is already being grabbed by another player
+    pub fn set_grab_target(
+        &mut self,
+        player: PlayerColor,
+        target: Option<PieceEntity>,
+    ) -> Option<PieceEntity> {
+        if let Some(t) = target {
+            assert!(!self.rev_grab_targets.contains(t));
+            self.grab_targets.insert(player, t)
+        } else {
+            if let Some(piece) = self.grab_targets.remove(player) {
+                self.rev_grab_targets.remove(piece);
+                Some(piece)
+            } else {
+                None
+            }
+        }
+    }
+
+    /// returns an iterator over player colors and their names
+    pub fn iter(&self) -> impl Iterator<Item = (PlayerColor, &String)> {
+        self.players.pairs_iter()
+    }
+}
+
+/// texture info for a piece face
+#[derive(Debug, Clone)]
+pub struct TextureInfo<T> {
+    /// the texture used to draw this piece
+    pub texture: T,
+
+    /// an enlarged version of this texture for zoomed views
+    pub texture_magnified: T,
 }
 
 pub struct VisualComponentProvider<'a, F, I> {

@@ -2,8 +2,13 @@ use mlua::{Table, Value};
 
 use crate::{
     color::{IColor, color_from_lua_table},
-    geometry::{IRect, IVec2, rect_from_lua_table, vec2_from_lua_table},
-    lua::{FromLuaTable, FromLuaValue},
+    ecs::EntityTrait,
+    geometry::{
+        CollisionShape, IConvexShape, IRect, IVec2, Transform, rect_from_lua_table,
+        vec2_from_lua_table,
+    },
+    lua::{FromLuaTable, FromLuaValue, vector_from_lua_value},
+    resources::CollisionShapeEntity,
 };
 
 /// a transform for an image, only covers offset and scale
@@ -227,7 +232,9 @@ impl<C: IColor, R: IRect> FromLuaTable for TextboxInfo<C, R> {
             Ok(mlua::Value::Nil) => None,
             Ok(mlua::Value::Number(x)) => Some(x.max(1.0) as f32),
             Ok(mlua::Value::Integer(x)) => Some(x.max(1) as f32),
-            Err(_) | Ok(_) => return Err(format!("Invalid spacing field, must be nil or numeric.")),
+            Err(_) | Ok(_) => {
+                return Err(format!("Invalid spacing field, must be nil or numeric."));
+            }
         };
 
         let font = if let Ok(t) = table.raw_get::<String>("font") {
@@ -663,12 +670,207 @@ impl<C: IColor, R: IRect, V: IVec2> FromLuaTable for VisualInfo<C, R, V> {
     }
 }
 
-/// texture info for a piece face
-#[derive(Debug, Clone)]
-pub struct TextureInfo<T> {
-    /// the texture used to draw this piece
-    pub texture: T,
+/// an identifier for an entity, which may either be by name or entity id
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntityIdentifier<E: EntityTrait> {
+    Entity(E),
+    Name(String),
+}
 
-    /// an enlarged version of this texture for zoomed views
-    pub texture_magnified: T,
+impl<E: EntityTrait> FromLuaValue for EntityIdentifier<E> {
+    fn try_from_lua_value(value: &mlua::Value) -> Result<Self, String> {
+        if let mlua::Value::String(s) = value {
+            Ok(Self::Name(format!("{}", s.display())))
+        } else {
+            Ok(Self::Entity(E::try_from_lua_value(value)?))
+        }
+    }
+}
+
+/// collision shape data intermediary between lua tables and actual collision shape
+#[derive(Debug, Clone)]
+pub enum CollisionShapeIR<S: IConvexShape + FromLuaTable> {
+    Identifier(EntityIdentifier<CollisionShapeEntity>),
+    Instance(CollisionShape<S>),
+}
+
+impl<S: IConvexShape + FromLuaTable> FromLuaValue for CollisionShapeIR<S> {
+    fn try_from_lua_value(value: &mlua::Value) -> Result<Self, String> {
+        if let mlua::Value::Table(table) = value {
+            Ok(Self::Instance(CollisionShape::try_from_lua_table(table)?))
+        } else {
+            Ok(Self::Identifier(EntityIdentifier::try_from_lua_value(
+                value,
+            )?))
+        }
+    }
+}
+
+/// collider data that serves as an intermediary between lua tables and a pieces collider
+#[derive(Debug, Clone)]
+pub struct PieceColliderIR<S: IConvexShape + FromLuaTable> {
+    /// the collision shape entity
+    pub shape: CollisionShapeIR<S>,
+
+    /// the collision layer this collider belongs on
+    pub layer: String,
+}
+
+impl<S: IConvexShape + FromLuaTable> FromLuaValue for PieceColliderIR<S> {
+    fn try_from_lua_value(value: &mlua::prelude::LuaValue) -> Result<Self, String> {
+        match value {
+            Value::Table(table) => Self::try_from_lua_table(&table),
+            _ => Err(format!("non-table value.")),
+        }
+    }
+}
+
+impl<S: IConvexShape + FromLuaTable> FromLuaTable for PieceColliderIR<S> {
+    fn try_from_lua_table(table: &mlua::prelude::LuaTable) -> Result<Self, String> {
+        let shape = if let Ok(shape_table) = table.raw_get::<Value>("shape") {
+            match CollisionShapeIR::try_from_lua_value(&shape_table) {
+                Ok(shape) => shape,
+                Err(msg) => return Err(format!("Invalid shape field: {msg}")),
+            }
+        } else {
+            return Err(format!("Invalid shape field."));
+        };
+
+        let layer = if let Ok(value) = table.raw_get::<Value>("layer") {
+            if value == Value::Nil {
+                String::from("default")
+            } else {
+                match String::try_from_lua_value(&value) {
+                    Ok(v) => v,
+                    Err(msg) => return Err(format!("Invalid layer field: {msg}")),
+                }
+            }
+        } else {
+            return Err(format!("Invalid layer field."));
+        };
+
+        Ok(Self { shape, layer })
+    }
+}
+
+/// piece data that serves as an intermediary between lua tables an a piece on the board
+pub struct PieceIR<S: IConvexShape + FromLuaTable, V: IVec2> {
+    /// optional name
+    pub name: Option<String>,
+
+    /// texture
+    pub texture: String,
+
+    /// the transform for the piece
+    pub transform: Transform<V>,
+
+    /// colliders
+    pub colliders: Vec<PieceColliderIR<S>>,
+
+    /// draw layer
+    pub draw_layer: i32,
+
+    /// categorizations
+    pub categories: Vec<String>,
+}
+
+impl<S: IConvexShape + FromLuaTable, V: IVec2> FromLuaValue for PieceIR<S, V> {
+    fn try_from_lua_value(value: &mlua::prelude::LuaValue) -> Result<Self, String> {
+        match value {
+            Value::Table(table) => Self::try_from_lua_table(&table),
+            _ => Err(format!("non-table value.")),
+        }
+    }
+}
+
+impl<S: IConvexShape + FromLuaTable, V: IVec2> FromLuaTable for PieceIR<S, V> {
+    fn try_from_lua_table(table: &Table) -> Result<Self, String> {
+        let name = if let Ok(val) = table.raw_get::<Value>("name") {
+            if let Value::Nil = val {
+                None
+            } else {
+                match String::try_from_lua_value(&val) {
+                    Ok(t) => Some(t),
+                    Err(msg) => return Err(format!("Invalid name field: {msg}")),
+                }
+            }
+        } else {
+            return Err(format!("Invalid name field."));
+        };
+
+        let texture = if let Ok(val) = table.raw_get::<Value>("texture") {
+            match String::try_from_lua_value(&val) {
+                Ok(t) => t,
+                Err(msg) => return Err(format!("Invalid texture field: {msg}")),
+            }
+        } else {
+            return Err(format!("Invalid name field."));
+        };
+
+        let transform = if let Ok(val) = table.raw_get::<Value>("transform") {
+            if let Value::Nil = val {
+                Default::default()
+            } else {
+                match Transform::try_from_lua_value(&val) {
+                    Ok(t) => t,
+                    Err(msg) => return Err(format!("Invalid transform field: {msg}")),
+                }
+            }
+        } else {
+            return Err(format!("Invalid transform field."));
+        };
+
+        let colliders = if let Ok(value) = table.raw_get::<Value>("colliders") {
+            vector_from_lua_value(&value, "collider field", "collider")?
+        } else {
+            return Err(format!("Invalid collider field."));
+        };
+
+        let draw_layer = if let Ok(value) = table.raw_get::<Value>("draw_layer") {
+            match &value {
+                Value::Nil => 0,
+                Value::Number(float) => {
+                    if float.round() != *float {
+                        return Err(format!("Invalid draw_layer field: non-integer value."));
+                    }
+                    if float.clamp(i32::MIN as f64, i32::MAX as f64) != *float {
+                        return Err(format!(
+                            "Invalid draw_layer field: must be in range [{}, {}].",
+                            i32::MIN,
+                            i32::MAX
+                        ));
+                    }
+                    *float as i32
+                }
+                Value::Integer(int) => {
+                    if (*int).clamp(i32::MIN as i64, i32::MAX as i64) != *int {
+                        return Err(format!(
+                            "Invalid draw_layer field: must be in range [{}, {}].",
+                            i32::MIN,
+                            i32::MAX
+                        ));
+                    }
+                    *int as i32
+                }
+                _ => return Err(format!("Invalid draw_layer field: non-integer value.")),
+            }
+        } else {
+            return Err(format!("Invalid draw_layer field."));
+        };
+
+        let categories = if let Ok(value) = table.raw_get::<Value>("categories") {
+            vector_from_lua_value(&value, "categories field", "category")?
+        } else {
+            return Err(format!("Invalid categories field."));
+        };
+
+        Ok(Self {
+            name,
+            texture,
+            transform,
+            colliders,
+            draw_layer,
+            categories,
+        })
+    }
 }

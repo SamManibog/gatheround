@@ -1,5 +1,5 @@
 // "main" modules
-pub mod piece_components;
+pub mod intermediate_representations;
 pub mod board;
 pub mod resources;
 pub mod renderer;

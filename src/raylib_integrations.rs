@@ -5,7 +5,6 @@ use std::{
     rc::Rc,
 };
 
-use mlua::{LuaString, Table};
 use raylib::{
     RaylibHandle, RaylibThread, callbacks,
     drawing::{
@@ -18,17 +17,9 @@ use raylib::{
 };
 
 use crate::{
-    board::{BoardManager, EntityIdentifier, PlayerColor},
-    color::IColor,
-    ecs::EntityTrait,
-    geometry::{ConvexHull, IConvexShape, IRect, IVec2},
-    lua::get_game_lua_instance,
-    piece_components::{
-        Alignment, ImageTransform, PatternInfo, PatternType, TextboxInfo, TextureInfo,
-        VisualComponent, VisualInfo,
-    },
-    renderer::{GlobalAssets, IRenderer},
-    resources::VisualComponentProvider,
+    board::BoardManager, color::IColor, ecs::EntityTrait, geometry::{ConvexHull, IConvexShape, IRect, IVec2}, intermediate_representations::{
+        Alignment, EntityIdentifier, ImageTransform, PatternInfo, PatternType, TextboxInfo, VisualComponent, VisualInfo
+    }, lua::get_game_lua_instance, renderer::{GlobalAssets, IRenderer}, resources::{PlayerColor, TextureInfo, VisualComponentProvider}
 };
 
 const FRAME_RATE: u32 = 60;
