@@ -42,6 +42,7 @@ pub trait IRenderer {
     type Color: IColor;
     type Rectangle: IRect;
     type Vector2: IVec2;
+    type ConvexShape: IConvexShape + FromLuaTable;
 
     /// compile a visual into a to-scale and magnified texture, assuming the given magnification dimensions
     /// image_provider maps a name to an image, all image names provided in the visual are valid,
@@ -71,9 +72,9 @@ pub trait IRenderer {
     ) -> Result<Self::Texture, String>;
 
     /// draws a board to a texture
-    fn draw_board<S: IConvexShape + FromLuaTable>(
+    fn draw_board(
         &mut self,
-        board: &BoardManager<Self::Rectangle, Self::Vector2, S, Self::Texture, Self::Font>,
+        board: &BoardManager<Self::Rectangle, Self::Vector2, Self::ConvexShape, Self::Texture, Self::Font>,
         assets: &GlobalAssets<Self::Texture>,
     ) -> Self::Texture;
 }

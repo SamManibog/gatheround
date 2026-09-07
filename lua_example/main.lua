@@ -14,7 +14,7 @@ create_texture("red_square", {
     }
 })
 
-create_texture("red_king", {
+create_texture("blue_king", {
     {
         type = "pattern",
         pattern = "solid",
@@ -25,9 +25,9 @@ create_texture("red_king", {
             height = 120
         },
         pattern_color = {
-            r = 255,
+            r = 0,
             g = 0,
-            b = 0,
+            b = 255,
         }
     },
     --[[{
@@ -83,22 +83,40 @@ create_piece({
                 {x=-40,y=40,},
                 {x=40,y=40,},
             }},
+        },
+        {
+            shape = {{
+                {x=-40,y=-40,},
+                {x=40,y=-40,},
+                {x=-40,y=40,},
+                {x=40,y=40,},
+            }},
             layer = "grab",
-        }
+        },
     },
 })
 
 create_piece({
     name = "blue_piece",
     transform = { x = 200, y = 200 },
-    texture = "red_king",
-    colliders = {{
-        shape = {{
-            {x=-60,y=-60,},
-            {x=60,y=-60,},
-            {x=-60,y=60,},
-            {x=60,y=60,},
-        }},
-        layer = "grab",
-    }},
+    texture = "blue_king",
+    colliders = {
+        {
+            shape = {{
+                {x=-60,y=-60,},
+                {x=60,y=-60,},
+                {x=-60,y=60,},
+                {x=60,y=60,},
+            }},
+        },
+        {
+            shape = {{
+                {x=-60,y=-60,},
+                {x=60,y=-60,},
+                {x=-60,y=60,},
+                {x=60,y=60,},
+            }},
+            layer = "grab",
+        },
+    },
 })

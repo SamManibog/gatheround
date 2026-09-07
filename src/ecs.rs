@@ -463,6 +463,15 @@ impl<E: EntityTrait, T> DenseComponentManager<E, T> {
         Some(&self.data[idx])
     }
 
+    /// queries the manager for an entity, inserting a new component on failure
+    pub fn get_or_insert(&mut self, entity: E, callback: impl FnOnce() -> T) -> &T {
+        if !self.contains(entity) {
+            self.insert(entity, callback());
+        }
+
+        self.get(entity).unwrap()
+    }
+
     /// queries the manager for an entity, mutably
     pub fn get_mut(&mut self, entity: E) -> Option<&mut T> {
         let idx = *self.sparse.get(entity.id() as usize)?;
@@ -471,6 +480,15 @@ impl<E: EntityTrait, T> DenseComponentManager<E, T> {
         }
 
         Some(&mut self.data[idx])
+    }
+
+    /// queries the manager for an entity, inserting a new component on failure
+    pub fn get_mut_or_insert(&mut self, entity: E, callback: impl FnOnce() -> T) -> &mut T {
+        if !self.contains(entity) {
+            self.insert(entity, callback());
+        }
+
+        self.get_mut(entity).unwrap()
     }
 
     /// returns an iterator over component references
@@ -544,6 +562,11 @@ impl<E: EntityTrait, T> ResourceManager<E, T> {
             names: Vec::new(),
             resources: Vec::new(),
         }
+    }
+
+    /// gets the number of entities stored
+    pub fn len(&self) -> usize {
+        self.entities.len()
     }
 
     /// gets a new id

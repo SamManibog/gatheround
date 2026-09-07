@@ -22,6 +22,8 @@ use crate::{
 
 const MAIN_LUA_FILE: &str = "main.lua";
 
+const DEFAULT_LUA_SCRIPT: &str = include_str!("defaults.lua");
+
 /// for structs that can be created based off of a lua table
 pub trait FromLuaTable: Sized {
     fn try_from_lua_table(table: &Table) -> Result<Self, String>;
@@ -380,6 +382,71 @@ pub fn get_game_lua_instance(
         }
     );
 
+    define_game_api!(
+        "show_debug",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, value: Value| {
+                // try to parse the entity
+                let entity_result = EntityIdentifier::try_from_lua_value(&value);
+                if let Err(msg) = entity_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let entity = entity_result.unwrap();
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.show_debug(entity) {
+                    Ok(()) => Ok(()),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
+        "hide_debug",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, value: Value| {
+                // try to parse the entity
+                let entity_result = EntityIdentifier::try_from_lua_value(&value);
+                if let Err(msg) = entity_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let entity = entity_result.unwrap();
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.hide_debug(entity) {
+                    Ok(()) => Ok(()),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    // load default functions
+    match lua.load(DEFAULT_LUA_SCRIPT).exec() {
+        Ok(()) => (),
+        Err(msg) => panic!("Unable to load default functions: {msg}"),
+    }
+
+    // load user script
     let main_path = project_path.join(MAIN_LUA_FILE);
     let script_content = std::fs::read_to_string(&main_path)
         .expect(&format!("Unable to read lua file '{:#?}'.", &main_path));

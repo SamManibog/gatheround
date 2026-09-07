@@ -5,6 +5,7 @@ use std::{
     rc::Rc,
 };
 
+use mlua::{LuaString, Table};
 use raylib::{
     RaylibHandle, RaylibThread, callbacks,
     drawing::{
@@ -17,8 +18,9 @@ use raylib::{
 };
 
 use crate::{
-    board::{BoardManager, PlayerColor},
+    board::{BoardManager, EntityIdentifier, PlayerColor},
     color::IColor,
+    ecs::EntityTrait,
     geometry::{ConvexHull, IConvexShape, IRect, IVec2},
     lua::get_game_lua_instance,
     piece_components::{
@@ -126,6 +128,12 @@ impl<'a> RaylibRenderer<'a> {
 
     /// minimum line spacing for automatic line spacing
     const MIN_AUTO_LINE_SPACING: f32 = 1.05;
+
+    /// thickness for debug polygon lines
+    const DEBUG_THICKNESS: f32 = 1.0;
+
+    /// thickness for debug polygon line outlines
+    const DEBUG_OUTLINE_THICKNESS: f32 = 3.0;
 
     pub fn from_handle(rl: &'a mut RaylibHandle, thread: &'a RaylibThread) -> Self {
         Self { rl, thread }
@@ -630,6 +638,7 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
     type Color = Color;
     type Rectangle = Rectangle;
     type Vector2 = Vector2;
+    type ConvexShape = ConvexHull<Vector2>;
 
     fn compile_visual(
         &mut self,
@@ -841,9 +850,15 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
         }
     }
 
-    fn draw_board<S: crate::geometry::IConvexShape + crate::lua::FromLuaTable>(
+    fn draw_board(
         &mut self,
-        board: &crate::board::BoardManager<Rectangle, Vector2, S, Self::Texture, Self::Font>,
+        board: &crate::board::BoardManager<
+            Rectangle,
+            Vector2,
+            ConvexHull<Vector2>,
+            Self::Texture,
+            Self::Font,
+        >,
         assets: &GlobalAssets<Self::Texture>,
     ) -> RenderTexture2D {
         let output_dimensions = board.dimensions();
@@ -855,6 +870,9 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
                 output_dimensions.y() as u32,
             )
             .unwrap();
+
+        let mut collision_layers = BTreeMap::new();
+        let mut collision_layer_number = 0.0;
 
         let mut draw_layers = BTreeMap::from_iter(board.draw_layer_iter().map(|l| {
             let mut layer = self
@@ -873,10 +891,11 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
             (l, layer)
         }));
 
-        for (texture, transform, layer) in board.texture_draw_iter() {
+        for (texture, collider_opt, transform, layer) in board.texture_draw_iter() {
             let render_texture = draw_layers.get_mut(&layer).unwrap();
             let mut painter = self.rl.begin_texture_mode(self.thread, render_texture);
 
+            // draw texture
             let src_rect = Rectangle {
                 x: 0.0,
                 y: 0.0,
@@ -895,6 +914,42 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
                 transform.angle.to_degrees(),
                 Color::WHITE,
             );
+
+            // draw colliders
+            if let Some(colliders) = collider_opt {
+                for collider in colliders {
+                    let color = if let Some(c) = collision_layers.get(&collider.layer) {
+                        *c
+                    } else {
+                        let hue = collision_layer_number / board.collision_layer_count() as f32;
+                        collision_layer_number += 1.0;
+                        let color = Color::color_from_hsv(hue, 1.0, 1.0);
+                        collision_layers.insert(collider.layer, color);
+                        color
+                    };
+
+                    let shapes = board.get_collision_shape(collider.shape).unwrap();
+                    for shape in shapes.0.iter() {
+                        let points = shape.points();
+                        let mut point_iter = shape.points().iter().peekable();
+                        while let (Some(p1), Some(p2)) = (point_iter.next(), point_iter.peek()) {
+                            let p1 = transform.transform_point(*p1);
+                            let p2 = transform.transform_point(**p2);
+                            painter.draw_line_ex(
+                                p1,
+                                p2,
+                                Self::DEBUG_OUTLINE_THICKNESS,
+                                Color::BLACK,
+                            );
+                            painter.draw_line_ex(p1, p2, Self::DEBUG_THICKNESS, color);
+                        }
+                        let p1 = transform.transform_point(*points.first().unwrap());
+                        let p2 = transform.transform_point(*points.last().unwrap());
+                        painter.draw_line_ex(p1, p2, Self::DEBUG_OUTLINE_THICKNESS, Color::BLACK);
+                        painter.draw_line_ex(p1, p2, Self::DEBUG_THICKNESS, color);
+                    }
+                }
+            }
         }
 
         self.rl
@@ -918,7 +973,7 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
                 }
 
                 // draw grabbed elements (again)
-                for (texture, transform) in board.grab_target_draw_iter() {
+                for (texture, collider_opt, transform) in board.grab_target_draw_iter() {
                     let src_rect = Rectangle {
                         x: 0.0,
                         y: 0.0,
@@ -937,6 +992,50 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
                         transform.angle.to_degrees(),
                         Color::WHITE,
                     );
+
+                    // draw colliders
+                    if let Some(colliders) = collider_opt {
+                        for collider in colliders {
+                            let color = if let Some(c) = collision_layers.get(&collider.layer) {
+                                *c
+                            } else {
+                                let hue =
+                                    collision_layer_number / board.collision_layer_count() as f32;
+                                collision_layer_number += 1.0;
+                                let color = Color::color_from_hsv(hue, 1.0, 1.0);
+                                collision_layers.insert(collider.layer, color);
+                                color
+                            };
+
+                            let shapes = board.get_collision_shape(collider.shape).unwrap();
+                            for shape in shapes.0.iter() {
+                                let points = shape.points();
+                                let mut point_iter = shape.points().iter().peekable();
+                                while let (Some(p1), Some(p2)) =
+                                    (point_iter.next(), point_iter.peek())
+                                {
+                                    let p1 = transform.transform_point(*p1);
+                                    let p2 = transform.transform_point(**p2);
+                                    painter.draw_line_ex(
+                                        p1,
+                                        p2,
+                                        Self::DEBUG_OUTLINE_THICKNESS,
+                                        Color::BLACK,
+                                    );
+                                    painter.draw_line_ex(p1, p2, Self::DEBUG_THICKNESS, color);
+                                }
+                                let p1 = transform.transform_point(*points.first().unwrap());
+                                let p2 = transform.transform_point(*points.last().unwrap());
+                                painter.draw_line_ex(
+                                    p1,
+                                    p2,
+                                    Self::DEBUG_OUTLINE_THICKNESS,
+                                    Color::BLACK,
+                                );
+                                painter.draw_line_ex(p1, p2, Self::DEBUG_THICKNESS, color);
+                            }
+                        }
+                    }
                 }
 
                 // draw player hands
@@ -1271,7 +1370,7 @@ impl TextCommandBuffer {
 /// runs a game editor from the given project path
 pub fn run_game(project_path: &Path) {
     let padding = Vector2::from_xy(20.0, 20.0);
-    let test_player = PlayerColor::Lime;
+    let test_player = PlayerColor::Green;
 
     // initialize game resources
     let board_dimensions = Vector2::from_xy(1000.0, 1000.0);
@@ -1316,31 +1415,75 @@ pub fn run_game(project_path: &Path) {
             return;
         }
 
-        // run update cycle
+        // update hand position
+        // randomize hand update order for "fair" movement
         {
-            // update hand position TEMPORARY DELETE LATER
-            {
-                let rl = rl_cell.borrow_mut();
-                let mut board = board_cell.borrow_mut();
-                if rl.is_mouse_button_pressed(raylib::ffi::MouseButton::MOUSE_BUTTON_LEFT) {
-                    board.attempt_grab(test_player);
-                } else if rl.is_mouse_button_pressed(raylib::ffi::MouseButton::MOUSE_BUTTON_RIGHT) {
-                    board.attempt_drop(test_player);
-                }
-                board.set_player_position(test_player, rl.get_mouse_position().sub(padding));
-            }
+            let rl = rl_cell.borrow_mut();
+            if rl.is_mouse_button_pressed(raylib::ffi::MouseButton::MOUSE_BUTTON_LEFT) {
+                drop(rl);
 
-            // update commands
-            {
-                let mut rl = rl_cell.borrow_mut();
-                if let Some(cmd) = command_buffer.update(&mut rl) {
-                    match lua.load(cmd).eval::<mlua::MultiValue>() {
-                        Ok(v) => println!("GOTVALUE FROM COMMAND!: {:?}", v),
-                        Err(e) => {
-                            println!(
-                                "GOT ERROR FROM COMMAND! NOT YET SURE WHAT TO DO WITH IT:\n{e}"
-                            )
-                        }
+                let mut board = board_cell.borrow_mut();
+                if let Some(piece) = board.piece_to_grab(test_player) {
+                    drop(board);
+
+                    let allow_grab_fn: mlua::Function = lua
+                        .globals()
+                        .raw_get("allowGrab")
+                        .expect("allowGrab has been overwritten to a non-function value.");
+                    let name_string = lua
+                        .create_string(test_player.name())
+                        .expect("unable to create player name string");
+
+                    let allow_grab: bool = allow_grab_fn
+                        .call((name_string, piece.id()))
+                        .expect("allowGrab has been overwritten with an invalid function.");
+
+                    if allow_grab {
+                        let mut board = board_cell.borrow_mut();
+                        let _ = board.attempt_grab(test_player, EntityIdentifier::Entity(piece));
+                    }
+                }
+            } else if rl.is_mouse_button_pressed(raylib::ffi::MouseButton::MOUSE_BUTTON_RIGHT) {
+                drop(rl);
+
+                let board = board_cell.borrow_mut();
+                if let Some(piece) = board.grabbed_piece(test_player) {
+                    let overlap_table = board.query_piece_overlaps(&lua, piece);
+                    drop(board);
+
+                    let allow_drop_fn: mlua::Function = lua
+                        .globals()
+                        .raw_get("allowDrop")
+                        .expect("allowDrop has been overwritten to a non-function value.");
+                    let name_string = lua
+                        .create_string(test_player.name())
+                        .expect("unable to create player name string");
+
+                    let allow_drop: bool = allow_drop_fn
+                        .call((name_string, piece.id(), overlap_table))
+                        .expect("allowDrop has been overwritten with an invalid function.");
+
+                    if allow_drop {
+                        let mut board = board_cell.borrow_mut();
+                        board.drop_held_piece(test_player);
+                    }
+                }
+            }
+        }
+        {
+            let rl = rl_cell.borrow_mut();
+            let mut board = board_cell.borrow_mut();
+            board.set_player_position(test_player, rl.get_mouse_position().sub(padding));
+        }
+
+        // update commands
+        {
+            let mut rl = rl_cell.borrow_mut();
+            if let Some(cmd) = command_buffer.update(&mut rl) {
+                match lua.load(cmd).eval::<mlua::MultiValue>() {
+                    Ok(v) => println!("GOTVALUE FROM COMMAND!: {:?}", v),
+                    Err(e) => {
+                        println!("GOT ERROR FROM COMMAND! NOT YET SURE WHAT TO DO WITH IT:\n{e}")
                     }
                 }
             }

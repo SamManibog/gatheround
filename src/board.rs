@@ -4,7 +4,7 @@ use std::{
     path::Path,
 };
 
-use mlua::{Table, Value};
+use mlua::{Lua, Table, Value};
 
 use crate::{
     color::IColor,
@@ -123,9 +123,13 @@ impl<S: IConvexShape + FromLuaTable> FromLuaTable for PieceColliderIR<S> {
         };
 
         let layer = if let Ok(value) = table.raw_get::<Value>("layer") {
-            match String::try_from_lua_value(&value) {
-                Ok(v) => v,
-                Err(msg) => return Err(format!("Invalid layer field: {msg}")),
+            if value == Value::Nil {
+                String::from("default")
+            } else {
+                match String::try_from_lua_value(&value) {
+                    Ok(v) => v,
+                    Err(msg) => return Err(format!("Invalid layer field: {msg}")),
+                }
             }
         } else {
             return Err(format!("Invalid layer field."));
@@ -476,6 +480,11 @@ impl CollisionLayerManager {
         self.layers.get_entity(layer)
     }
 
+    /// gets the name corresponding to the layer
+    pub fn get_name(&self, layer: CollisionLayerEntity) -> Option<&String> {
+        self.layers.get_name(layer)
+    }
+
     /// decrements the ref count for the layer
     pub fn decrement_count(&mut self, layer: CollisionLayerEntity) {
         if let Some(count) = self.layers.get_mut(layer) {
@@ -490,6 +499,11 @@ impl CollisionLayerManager {
     /// returns an iterator over all stored collision layers
     pub fn layer_iter(&self) -> impl Iterator<Item = &String> {
         self.layers.identifier_iter().map(|(_, n)| n.unwrap())
+    }
+
+    /// returns the number of collision layers contained
+    pub fn len(&self) -> usize {
+        self.layers.len()
     }
 }
 
@@ -894,6 +908,9 @@ pub struct BoardManager<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F
     /// the textures for each piece
     piece_textures: DenseComponentManager<PieceEntity, TextureEntity>,
 
+    /// pieces who should have their collision shapes drawn
+    debug_pieces: DenseSet<PieceEntity>,
+
     /// the order in which to draw entities
     /// all piece entities are found in this vector, even if they do not have a texture
     /// this is so the draw order of pieces is stable even after adding or removing their
@@ -922,6 +939,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             draw_layers: Default::default(),
             categories: Default::default(),
             piece_entity_manager: Default::default(),
+            debug_pieces: Default::default(),
             stacks: Default::default(),
             piece_textures: Default::default(),
             draw_order: Default::default(),
@@ -1248,7 +1266,12 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             }
 
             // set colliders
-            self.piece_colliders.insert(piece, colliders);
+            if let Some(colliders) = self.piece_colliders.insert(piece, colliders) {
+                // decrement count of old colliders
+                for collider in colliders {
+                    self.collision_layers.decrement_count(collider.layer);
+                }
+            }
         }
     }
 
@@ -1285,24 +1308,43 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
 
     /// returns an iterator over texture-owning pieces and their transforms in the order in which
     /// they should be drawn (appearing first means should be on the bottom)
-    pub fn texture_draw_iter(&self) -> impl Iterator<Item = (&T, Transform<V>, i32)> {
-        self.draw_order.iter().filter_map(|m| {
-            let texture_entity = self.piece_textures.get(*m)?;
+    pub fn texture_draw_iter(
+        &self,
+    ) -> impl Iterator<Item = (&T, Option<&[PieceCollider]>, Transform<V>, i32)> {
+        self.draw_order.iter().filter_map(|piece| {
+            let texture_entity = self.piece_textures.get(*piece)?;
             let texture = &self
                 .texture_resources
                 .get_texture(*texture_entity)
                 .unwrap()
                 .texture;
-            let transform = self.piece_transforms.get(*m).unwrap();
-            let draw_layer = self.draw_layers.get(*m).unwrap();
+            let transform = self.piece_transforms.get(*piece).unwrap();
+            let draw_layer = self.draw_layers.get(*piece).unwrap();
+            let colliders = if self.debug_pieces.contains(*piece) {
+                self.piece_colliders.get(*piece).map(|l| l.as_slice())
+            } else {
+                None
+            };
 
-            Some((texture, *transform, draw_layer))
+            Some((texture, colliders, *transform, draw_layer))
         })
+    }
+
+    /// gets the collision shape referenced by the CollisionShapeEntity
+    pub fn get_collision_shape(&self, shape: CollisionShapeEntity) -> Option<&CollisionShape<S>> {
+        self.collision_shape_resources.get(shape)
+    }
+
+    /// gets the number of collision layers
+    pub fn collision_layer_count(&self) -> usize {
+        self.collision_layers.len()
     }
 
     /// returns an iterator over the textures of grabbed pieces and their transforms
     /// grab targets should be drawn on top of all other pieces
-    pub fn grab_target_draw_iter(&self) -> impl Iterator<Item = (&T, Transform<V>)> {
+    pub fn grab_target_draw_iter(
+        &self,
+    ) -> impl Iterator<Item = (&T, Option<&[PieceCollider]>, Transform<V>)> {
         self.players.grab_target_iter().filter_map(|target| {
             let texture_entity = self.piece_textures.get(target)?;
             let texture = &self
@@ -1311,7 +1353,13 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
                 .unwrap()
                 .texture;
             let transform = self.piece_transforms.get(target).unwrap();
-            Some((texture, *transform))
+            let colliders = if self.debug_pieces.contains(target) {
+                self.piece_colliders.get(target).map(|l| l.as_slice())
+            } else {
+                None
+            };
+
+            Some((texture, colliders, *transform))
         })
     }
 
@@ -1389,6 +1437,126 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             .map(|t| &t.texture)
     }
 
+    /// returns a lua table based on the pieces intersecting the given piece
+    ///
+    /// the output table has both sequential and non-sequential values
+    /// sequential values are the names of the overlapping collision layers
+    /// non-sequential values are a map from the names of the overlapping collision layers
+    /// to the pieces overlapping in that layer
+    pub fn query_piece_overlaps(&self, lua: &Lua, piece: PieceEntity) -> mlua::Table {
+        let colliders = if let Some(c) = self.piece_colliders.get(piece) {
+            c
+        } else {
+            return lua.create_table().expect("unable to create empty table");
+        };
+
+        // group colliders by layer
+        let shapes_by_layer = {
+            let mut out = DenseComponentManager::new();
+
+            for collider in colliders.iter() {
+                let shape_list = out.get_mut_or_insert(collider.layer, || Vec::new());
+                let shape = self.collision_shape_resources.get(collider.shape).unwrap();
+                shape_list.push(shape);
+            }
+
+            out
+        };
+
+        // can unwrap transform because all pieces have transforms
+        let transform = self.piece_transforms.get(piece).unwrap();
+
+        // can unwrap aabb because only non-empty collider listsare inserted into collider component
+        let aabb = geometry::compute_advanced_aabb(
+            transform,
+            colliders
+                .iter()
+                .map(|c| self.collision_shape_resources.get(c.shape).unwrap()),
+        )
+        .unwrap();
+
+        let mut out = DenseComponentManager::new();
+
+        'aabb_loop: for p in self.quadtree.query_rect(aabb) {
+            if p == piece {
+                continue 'aabb_loop;
+            }
+
+            // unwrap is safe because pieces in quadtree must have colliders
+            let p_colliders = self.piece_colliders.get(p).unwrap();
+
+            // can unwrap transform because all pieces have transforms
+            let p_transform = self.piece_transforms.get(p).unwrap();
+
+            // the set of layers in this piece that are already contained
+            let mut overlapping_layers = DenseSet::new();
+
+            'collider_loop: for p_collider in p_colliders {
+                // skip layers already checked
+                if overlapping_layers.contains(p_collider.layer) {
+                    continue 'collider_loop;
+                }
+
+                // skip layers that the piece does not have
+                let shapes = if let Some(s) = shapes_by_layer.get(p_collider.layer) {
+                    s
+                } else {
+                    continue 'collider_loop;
+                };
+
+                // unwrap is safe because all collider ids are contained in collision shape resources
+                let p_shape = self
+                    .collision_shape_resources
+                    .get(p_collider.shape)
+                    .unwrap();
+
+                'shape_loop: for shape in shapes {
+                    if shape.intersects(transform, p_shape, p_transform) {
+                        let pieces_in_layer =
+                            out.get_mut_or_insert(p_collider.layer, || Vec::new());
+                        pieces_in_layer.push(p);
+                        overlapping_layers.insert(p_collider.layer);
+
+                        break 'shape_loop;
+                    }
+                }
+            }
+        }
+
+        let table = lua
+            .create_table_with_capacity(out.len(), out.len())
+            .expect("Unable to create piece overlap query table");
+        let mut layer_index = 0;
+        for (layer, pieces) in out.pairs_iter() {
+            layer_index += 1;
+
+            let layer_table = lua
+                .create_table_with_capacity(pieces.len(), 0)
+                .expect("Unable to create piece overlap query table");
+
+            let mut piece_index = 0;
+            for piece in pieces {
+                piece_index += 1;
+
+                layer_table
+                    .raw_set(piece_index, piece.id())
+                    .expect("Unable to create piece overlap query table");
+            }
+
+            let layer_name = lua.create_string(&self.collision_layers.get_name(layer).unwrap()).
+                expect("Unable to create piece overlap query table");
+
+            table
+                .raw_set(&layer_name, layer_table)
+                .expect("Unable to create piece overlap query table");
+            table
+                .raw_set(layer_index, layer_name)
+                .expect("Unable to create piece overlap query table");
+        }
+
+        table
+    }
+
     /// checks if a texture with the given name exists
     pub fn contains_texture(&self, name: &String) -> bool {
         self.texture_resources.contains_texture_name(name)
@@ -1417,15 +1585,22 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
         }
     }
 
-    /// attempts to grab the piece under the player, returning the grabbed entity
-    pub fn attempt_grab(&mut self, player: PlayerColor) -> Option<PieceEntity> {
+    /// returns the piece that a player is grabbing
+    pub fn grabbed_piece(&self, player: PlayerColor) -> Option<PieceEntity> {
+        self.players.get_grab_target(player)
+    }
+
+    /// returns the piece a player should grab, should it attempt to
+    pub fn piece_to_grab(&mut self, player: PlayerColor) -> Option<PieceEntity> {
         let position = self.players.get_position(player)?;
 
-        // get colliding pieces
+        // get pieces with overlapping aabbs
         let colliding_aabbs = self.quadtree.query_point(position);
         if colliding_aabbs.is_empty() {
-            return  None;
+            return None;
         }
+
+        // filter out pieces that are invisible or aren't actually colliding
         let colliding = colliding_aabbs.into_iter().filter(|piece| {
             let transform = *self.piece_transforms.get(*piece).unwrap();
             let shape_iter = self
@@ -1435,6 +1610,9 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
                 .iter()
                 .map(|collider| self.collision_shape_resources.get(collider.shape).unwrap());
 
+            if !self.piece_textures.contains(*piece) {
+                return false;
+            }
             for shape in shape_iter {
                 if shape.contains_point(transform, position) {
                     return true;
@@ -1452,7 +1630,8 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
 
         // place all pieces in the highest draw layer into a set
         let mut high_colliding = {
-            let high_colliding_iter = colliding.filter(|piece| self.draw_layers.get(*piece).unwrap() == draw_layer);
+            let high_colliding_iter =
+                colliding.filter(|piece| self.draw_layers.get(*piece).unwrap() == draw_layer);
             let mut set = DenseSet::new();
             for piece in high_colliding_iter {
                 set.insert(piece);
@@ -1465,12 +1644,48 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             high_colliding.remove(piece);
 
             if high_colliding.is_empty() {
-                self.grab_piece_unchecked(player, piece);
-                return Some(piece)
+                return Some(piece);
             }
         }
 
         unreachable!()
+    }
+
+    /// makes a piece show its collision shapes
+    pub fn show_debug(&mut self, piece: EntityIdentifier<PieceEntity>) -> Result<(), String> {
+        let piece = self.is_piece_valid(piece)?;
+        self.debug_pieces.insert(piece);
+        Ok(())
+    }
+
+    /// makes a piece hide its collision shapes
+    pub fn hide_debug(&mut self, piece: EntityIdentifier<PieceEntity>) -> Result<(), String> {
+        let piece = self.is_piece_valid(piece)?;
+        self.debug_pieces.remove(piece);
+        Ok(())
+    }
+
+    /// makes a player grab the given piece
+    /// fails without error if the piece is being held or the player is already holding a piece
+    /// returns true on successful grab without error
+    pub fn attempt_grab(
+        &mut self,
+        player: PlayerColor,
+        piece: EntityIdentifier<PieceEntity>,
+    ) -> Result<bool, String> {
+        let piece = self.is_piece_valid(piece)?;
+        if !self.players.is_playing(player) {
+            return Err(format!("Player {player} does not exist."));
+        }
+
+        if self.players.is_grabbing(player) {
+            return Ok(false);
+        }
+        if self.players.is_grabbed(piece) {
+            return Ok(false);
+        }
+        self.grab_piece_unchecked(player, piece);
+        Ok(true)
     }
 
     /// makes a player grab a given piece
@@ -1487,7 +1702,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
     }
 
     /// makes the player drop is held piece
-    pub fn attempt_drop(&mut self, player: PlayerColor) {
+    pub fn drop_held_piece(&mut self, player: PlayerColor) {
         if self.players.is_grabbing(player) {
             self.drop_piece_unchecked(player);
         }
@@ -1495,12 +1710,18 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
 
     /// makes a player drop the piece it is grabbing
     /// no checks are performed to ensure that the player is valid
+    /// puts the newly dropped piece at the top of its draw layer
     fn drop_piece_unchecked(&mut self, player: PlayerColor) {
         // drop the piece
         let piece = self.players.set_grab_target(player, None).unwrap();
 
         // re-enable collisions by performing an operation that updates the quadtree
         self.set_piece_transform_unchecked(piece, *self.piece_transforms.get(piece).unwrap());
+
+        // put new piece at top of its draw layer
+        self.draw_order
+            .remove(self.draw_order.iter().position(|p| *p == piece).unwrap());
+        self.draw_order.push_back(piece);
     }
 
     /// sets the position of the player

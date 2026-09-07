@@ -707,13 +707,18 @@ impl<V: IVec2> Default for Transform<V> {
 
 impl<V: IVec2> Transform<V> {
     /// apply another transform to this one
-    pub fn transform(&mut self, other: &Self) {
+    fn transform(&mut self, other: &Self) {
         // rotate by other transform
         self.offset = self.offset.rotated(other.angle);
         self.angle += other.angle;
 
         // offset by other transform
         self.offset = self.offset.add(other.offset);
+    }
+
+    /// apply a transform to a point
+    pub fn transform_point<V2: IVec2>(&self, point: V2) -> V2 {
+        point.add(self.offset)
     }
 
     /// construct a new transform by applying another transform
@@ -1097,27 +1102,6 @@ impl<V: IVec2> ConvexHull<V> {
         &self.0
     }
 
-    /// gets the furthest point in a given direction by index
-    pub fn furthest_point_index<V2: IVec2>(&self, direction: V2) -> usize {
-        let mut last_dot = f32::MIN;
-        let mut is_increasing = false;
-        let iter = self.0.iter().chain(self.0.iter());
-
-        for (idx, point) in iter.enumerate() {
-            let dot = point.dot(direction);
-            if dot < last_dot {
-                if is_increasing {
-                    return (idx - 1) % self.0.len();
-                }
-            } else {
-                is_increasing = true;
-            }
-            last_dot = dot;
-        }
-
-        unreachable!()
-    }
-
     /// inserts a point into this hull
     pub fn insert(&mut self, point: V) {
         self.0.push(point);
@@ -1127,7 +1111,17 @@ impl<V: IVec2> ConvexHull<V> {
 
 impl<V: IVec2> IConvexShape for ConvexHull<V> {
     fn furthest_point<V2: IVec2>(&self, direction: V2) -> V2 {
-        V2::from_other(self.0[self.furthest_point_index(direction)])
+        let mut max_point = self.0[0];
+        let mut max_dot = max_point.dot(direction);
+
+        for point in self.points().iter().skip(1) {
+            let dot = point.dot(direction);
+            if dot > max_dot {
+                max_dot = dot;
+                max_point = *point;
+            }
+        }
+        V2::from_other(max_point)
     }
 }
 
