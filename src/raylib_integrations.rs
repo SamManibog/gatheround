@@ -1370,7 +1370,7 @@ impl TextCommandBuffer {
 /// runs a game editor from the given project path
 pub fn run_game(project_path: &Path) {
     let padding = Vector2::from_xy(20.0, 20.0);
-    let test_player = PlayerColor::Green;
+    let test_player = PlayerColor::Lime;
 
     // initialize game resources
     let board_dimensions = Vector2::from_xy(1000.0, 1000.0);

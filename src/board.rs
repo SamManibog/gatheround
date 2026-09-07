@@ -144,8 +144,8 @@ pub struct PieceIR<S: IConvexShape + FromLuaTable, V: IVec2> {
     /// optional name
     pub name: Option<String>,
 
-    /// optional texture (invisible pieces are allowed for gameplay reasons)
-    pub texture: Option<String>,
+    /// texture
+    pub texture: String,
 
     /// the transform for the piece
     pub transform: Transform<V>,
@@ -185,13 +185,9 @@ impl<S: IConvexShape + FromLuaTable, V: IVec2> FromLuaTable for PieceIR<S, V> {
         };
 
         let texture = if let Ok(val) = table.raw_get::<Value>("texture") {
-            if let Value::Nil = val {
-                None
-            } else {
-                match String::try_from_lua_value(&val) {
-                    Ok(t) => Some(t),
-                    Err(msg) => return Err(format!("Invalid name field: {msg}")),
-                }
+            match String::try_from_lua_value(&val) {
+                Ok(t) => t,
+                Err(msg) => return Err(format!("Invalid texture field: {msg}")),
             }
         } else {
             return Err(format!("Invalid name field."));
@@ -906,10 +902,17 @@ pub struct BoardManager<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F
     stacks: DenseComponentManager<PieceEntity, StackInfo<V>>,
 
     /// the textures for each piece
+    /// each piece must have a texture
     piece_textures: DenseComponentManager<PieceEntity, TextureEntity>,
 
     /// pieces who should have their collision shapes drawn
     debug_pieces: DenseSet<PieceEntity>,
+
+    /// pieces who should be hidden
+    hidden_pieces: DenseSet<PieceEntity>,
+
+    /// pieces who have collisions disabled
+    no_collision_pieces: DenseSet<PieceEntity>,
 
     /// the order in which to draw entities
     /// all piece entities are found in this vector, even if they do not have a texture
@@ -918,6 +921,7 @@ pub struct BoardManager<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F
     draw_order: VecDeque<PieceEntity>,
 
     /// the transforms of each piece
+    /// each entity must have a transform
     piece_transforms: DenseComponentManager<PieceEntity, Transform<V>>,
 
     /// the colliders for each piece
@@ -940,6 +944,8 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             categories: Default::default(),
             piece_entity_manager: Default::default(),
             debug_pieces: Default::default(),
+            hidden_pieces: Default::default(),
+            no_collision_pieces: Default::default(),
             stacks: Default::default(),
             piece_textures: Default::default(),
             draw_order: Default::default(),
@@ -981,9 +987,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             return Err(format!("A piece named '{name}' already exists."));
         }
 
-        if let Some(texture) = &ir.texture {
-            self.is_texture_valid(texture)?
-        }
+        self.is_texture_valid(&ir.texture)?;
 
         for collider in &ir.colliders {
             self.validate_collider_ir(collider)?;
@@ -1053,40 +1057,22 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
     pub fn set_texture(
         &mut self,
         piece: EntityIdentifier<PieceEntity>,
-        texture: Option<String>,
+        texture: &String,
     ) -> Result<(), String> {
         let piece = self.is_piece_valid(piece.clone())?;
-        if let Some(t) = &texture {
-            self.is_texture_valid(t)?;
-        }
+        self.is_texture_valid(texture)?;
 
         self.set_piece_texture_unchecked(piece, texture);
         Ok(())
     }
 
     /// sets the texture of a piece without checking whether the or texture is valid
-    fn set_piece_texture_unchecked(&mut self, piece: PieceEntity, texture: Option<String>) {
-        if let Some(identifier) = &texture {
-            // change to a texture
+    fn set_piece_texture_unchecked(&mut self, piece: PieceEntity, texture: &String) {
+        // determine texture entity
+        let new_texture = self.texture_resources.get_texture_entity(texture).unwrap();
 
-            // determine texture entity
-            let new_texture = self
-                .texture_resources
-                .get_texture_entity(identifier)
-                .unwrap();
-
-            // modify texture
-            if let Some(old_texture) = self.piece_textures.get_mut(piece) {
-                // change texture
-                *old_texture = new_texture;
-            } else {
-                // add new texture
-                self.piece_textures.insert(piece, new_texture);
-            };
-        } else {
-            // remove texture
-            let _ = self.piece_textures.remove(piece).is_some();
-        }
+        // modify texture
+        self.piece_textures.insert(piece, new_texture);
     }
 
     /// sets the piece or stacks transform
@@ -1286,7 +1272,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             self.piece_entity_manager.get_new()
         };
 
-        self.set_piece_texture_unchecked(entity, ir.texture);
+        self.set_piece_texture_unchecked(entity, &ir.texture);
 
         self.draw_layers.set(entity, ir.draw_layer);
 
@@ -1312,7 +1298,14 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
         &self,
     ) -> impl Iterator<Item = (&T, Option<&[PieceCollider]>, Transform<V>, i32)> {
         self.draw_order.iter().filter_map(|piece| {
-            let texture_entity = self.piece_textures.get(*piece)?;
+            if self.hidden_pieces.contains(*piece) {
+                return None;
+            }
+
+            // entity unwrap is safe because we guarantee all pieces have a texture
+            let texture_entity = self.piece_textures.get(*piece).unwrap();
+
+            // resource unwrap is safe because all piece_texture components are valid
             let texture = &self
                 .texture_resources
                 .get_texture(*texture_entity)
@@ -1346,6 +1339,10 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
         &self,
     ) -> impl Iterator<Item = (&T, Option<&[PieceCollider]>, Transform<V>)> {
         self.players.grab_target_iter().filter_map(|target| {
+            if self.hidden_pieces.contains(target) {
+                return None;
+            }
+
             let texture_entity = self.piece_textures.get(target)?;
             let texture = &self
                 .texture_resources
@@ -1444,6 +1441,10 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
     /// non-sequential values are a map from the names of the overlapping collision layers
     /// to the pieces overlapping in that layer
     pub fn query_piece_overlaps(&self, lua: &Lua, piece: PieceEntity) -> mlua::Table {
+        if self.no_collision_pieces.contains(piece) {
+            return lua.create_table().expect("unable to create empty table");
+        }
+
         let colliders = if let Some(c) = self.piece_colliders.get(piece) {
             c
         } else {
@@ -1478,7 +1479,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
         let mut out = DenseComponentManager::new();
 
         'aabb_loop: for p in self.quadtree.query_rect(aabb) {
-            if p == piece {
+            if p == piece || self.no_collision_pieces.contains(p) {
                 continue 'aabb_loop;
             }
 
@@ -1543,8 +1544,9 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
                     .expect("Unable to create piece overlap query table");
             }
 
-            let layer_name = lua.create_string(&self.collision_layers.get_name(layer).unwrap()).
-                expect("Unable to create piece overlap query table");
+            let layer_name = lua
+                .create_string(&self.collision_layers.get_name(layer).unwrap())
+                .expect("Unable to create piece overlap query table");
 
             table
                 .raw_set(&layer_name, layer_table)
@@ -1602,6 +1604,10 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
 
         // filter out pieces that are invisible or aren't actually colliding
         let colliding = colliding_aabbs.into_iter().filter(|piece| {
+            if self.hidden_pieces.contains(*piece) {
+                return false;
+            }
+
             let transform = *self.piece_transforms.get(*piece).unwrap();
             let shape_iter = self
                 .piece_colliders
@@ -1610,9 +1616,6 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
                 .iter()
                 .map(|collider| self.collision_shape_resources.get(collider.shape).unwrap());
 
-            if !self.piece_textures.contains(*piece) {
-                return false;
-            }
             for shape in shape_iter {
                 if shape.contains_point(transform, position) {
                     return true;
@@ -1743,5 +1746,33 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             // update player position
             self.players.set_position(player, position);
         }
+    }
+
+    /// makes a piece visible
+    pub fn show(&mut self, piece: EntityIdentifier<PieceEntity>) -> Result<(), String> {
+        let piece = self.is_piece_valid(piece)?;
+        self.hidden_pieces.remove(piece);
+        Ok(())
+    }
+
+    /// makes a piece hidden
+    pub fn hide(&mut self, piece: EntityIdentifier<PieceEntity>) -> Result<(), String> {
+        let piece = self.is_piece_valid(piece)?;
+        self.hidden_pieces.insert(piece);
+        Ok(())
+    }
+
+    /// disable a piece's collisions
+    pub fn disable_collisions(&mut self, piece: EntityIdentifier<PieceEntity>) -> Result<(), String> {
+        let piece = self.is_piece_valid(piece)?;
+        self.no_collision_pieces.insert(piece);
+        Ok(())
+    }
+
+    /// enable a piece's collisions
+    pub fn enable_collisions(&mut self, piece: EntityIdentifier<PieceEntity>) -> Result<(), String> {
+        let piece = self.is_piece_valid(piece)?;
+        self.no_collision_pieces.remove(piece);
+        Ok(())
     }
 }

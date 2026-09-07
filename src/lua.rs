@@ -440,6 +440,122 @@ pub fn get_game_lua_instance(
         }
     );
 
+    define_game_api!(
+        "show",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, value: Value| {
+                // try to parse the entity
+                let entity_result = EntityIdentifier::try_from_lua_value(&value);
+                if let Err(msg) = entity_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let entity = entity_result.unwrap();
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.show(entity) {
+                    Ok(()) => Ok(()),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
+        "hide",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, value: Value| {
+                // try to parse the entity
+                let entity_result = EntityIdentifier::try_from_lua_value(&value);
+                if let Err(msg) = entity_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let entity = entity_result.unwrap();
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.hide(entity) {
+                    Ok(()) => Ok(()),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
+        "disable_collisions",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, value: Value| {
+                // try to parse the entity
+                let entity_result = EntityIdentifier::try_from_lua_value(&value);
+                if let Err(msg) = entity_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let entity = entity_result.unwrap();
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.disable_collisions(entity) {
+                    Ok(()) => Ok(()),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
+        "enable_collisions",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, value: Value| {
+                // try to parse the entity
+                let entity_result = EntityIdentifier::try_from_lua_value(&value);
+                if let Err(msg) = entity_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let entity = entity_result.unwrap();
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.enable_collisions(entity) {
+                    Ok(()) => Ok(()),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
     // load default functions
     match lua.load(DEFAULT_LUA_SCRIPT).exec() {
         Ok(()) => (),
