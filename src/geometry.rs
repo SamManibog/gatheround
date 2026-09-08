@@ -61,6 +61,11 @@ pub trait IVec2: std::fmt::Debug + Sized + Clone + Copy + PartialEq + IConvexSha
         Self::from_xy(other.x(), other.y())
     }
 
+    /// the origin
+    fn origin() -> Self {
+        Self::from_xy(0.0, 0.0)
+    }
+
     /// create an instance from this one, setting x value
     fn with_x(self, x: f32) -> Self {
         Self::from_xy(x, self.y())
@@ -229,7 +234,11 @@ pub trait IRect: Sized + Clone + Copy + IConvexShape {
         let mut max_point = self.top_left::<V>();
         let mut max_dot = max_point.dot(direction);
 
-        for point in [self.top_right::<V>(), self.bottom_right(), self.bottom_left()] {
+        for point in [
+            self.top_right::<V>(),
+            self.bottom_right(),
+            self.bottom_left(),
+        ] {
             let dot = point.dot(direction);
             if dot > max_dot {
                 max_dot = dot;
@@ -284,6 +293,11 @@ pub trait IRect: Sized + Clone + Copy + IConvexShape {
     /// creates an instance from another rect
     fn from_rect<R: IRect>(other: &R) -> Self {
         Self::from_position_dimension::<(f32, f32), (f32, f32)>(other.min(), other.dimensions())
+    }
+
+    /// offsets this rectangle by the given delta
+    fn offset<V: IVec2>(&self, delta: V) -> Self {
+        Self::from_position_dimension(self.position::<V>().add(delta), self.dimensions::<V>())
     }
 
     /// creates a rectangle that contains this and another rectangle
@@ -686,9 +700,9 @@ pub trait IRect: Sized + Clone + Copy + IConvexShape {
     }
 }
 
-/// a transform made up of an offset and angle
+/// a transform combining rotation and translation, in that order
 #[derive(Debug, Clone, Copy)]
-pub struct Transform<V: IVec2> {
+pub struct RigidTransform<V: IVec2> {
     /// translation
     pub offset: V,
 
@@ -696,7 +710,7 @@ pub struct Transform<V: IVec2> {
     pub angle: f32,
 }
 
-impl<V: IVec2> Default for Transform<V> {
+impl<V: IVec2> Default for RigidTransform<V> {
     fn default() -> Self {
         Self {
             offset: V::from_xy(0.0, 0.0),
@@ -705,31 +719,40 @@ impl<V: IVec2> Default for Transform<V> {
     }
 }
 
-impl<V: IVec2> Transform<V> {
-    /// apply another transform to this one
-    fn transform(&mut self, other: &Self) {
-        // rotate by other transform
-        self.offset = self.offset.rotated(other.angle);
-        self.angle += other.angle;
-
-        // offset by other transform
-        self.offset = self.offset.add(other.offset);
+impl<V: IVec2> RigidTransform<V> {
+    /// gets the identity transform (same as defalt())
+    pub fn identity() -> Self {
+        Self::default()
     }
 
     /// apply a transform to a point
-    pub fn transform_point<V2: IVec2>(&self, point: V2) -> V2 {
-        point.add(self.offset)
+    pub fn apply_to_point<V2: IVec2>(&self, point: V2) -> V2 {
+        point.rotated(self.angle).add(self.offset)
     }
 
-    /// construct a new transform by applying another transform
-    pub fn transformed(&self, other: &Self) -> Self {
-        let mut copy = self.clone();
-        copy.transform(other);
-        copy
+    /// applies the inverse of this transform to a point
+    pub fn apply_inv_to_point<V2: IVec2>(&self, point: V2) -> V2 {
+        point.sub(self.offset).rotated(-self.angle)
+    }
+
+    /// applies this transform to another
+    pub fn apply_to_other(&self, other: &Self) -> Self {
+        Self {
+            offset: self.apply_to_point(other.offset),
+            angle: other.angle + self.angle,
+        }
+    }
+
+    /// applies the inverse of this transform to another
+    pub fn apply_inv_to_other(&self, other: &Self) -> Self {
+        Self {
+            offset: self.apply_inv_to_point(other.offset),
+            angle: other.angle - self.angle,
+        }
     }
 }
 
-impl<V: IVec2> FromLuaTable for Transform<V> {
+impl<V: IVec2> FromLuaTable for RigidTransform<V> {
     fn try_from_lua_table(table: &Table) -> Result<Self, String> {
         let offset = vec2_from_lua_table(table)?;
 
@@ -745,7 +768,7 @@ impl<V: IVec2> FromLuaTable for Transform<V> {
     }
 }
 
-impl<V: IVec2> FromLuaValue for Transform<V> {
+impl<V: IVec2> FromLuaValue for RigidTransform<V> {
     fn try_from_lua_value(value: &mlua::prelude::LuaValue) -> Result<Self, String> {
         match value {
             Value::Table(table) => Self::try_from_lua_table(&table),
@@ -763,11 +786,11 @@ pub trait IConvexShape {
 #[derive(Debug, Clone)]
 pub struct TransformedConvexShape<S: IConvexShape, V: IVec2> {
     pub shape: S,
-    pub transform: Transform<V>,
+    pub transform: RigidTransform<V>,
 }
 
 impl<V: IVec2, S: IConvexShape> TransformedConvexShape<S, V> {
-    pub fn new(shape: S, transform: Transform<V>) -> Self {
+    pub fn new(shape: S, transform: RigidTransform<V>) -> Self {
         Self { shape, transform }
     }
 }
@@ -786,11 +809,11 @@ impl<V: IVec2, S: IConvexShape> IConvexShape for TransformedConvexShape<S, V> {
 
 pub struct TransformedConvexShapeRef<'a, S: IConvexShape, V: IVec2> {
     pub shape: &'a S,
-    pub transform: &'a Transform<V>,
+    pub transform: &'a RigidTransform<V>,
 }
 
 impl<'a, V: IVec2, S: IConvexShape> TransformedConvexShapeRef<'a, S, V> {
-    pub fn new(shape: &'a S, transform: &'a Transform<V>) -> Self {
+    pub fn new(shape: &'a S, transform: &'a RigidTransform<V>) -> Self {
         Self { shape, transform }
     }
 }
@@ -921,7 +944,7 @@ impl<S: IConvexShape> CollisionShape<S> {
     }
 
     /// creates an aabb transformed by the given transform
-    pub fn aabb_transformed<V: IVec2, R: IRect>(&self, transform: &Transform<V>) -> R {
+    pub fn aabb_transformed<V: IVec2, R: IRect>(&self, transform: &RigidTransform<V>) -> R {
         let rotated = self.aabb_rotated::<R>(transform.angle);
         R::from_position_dimension(
             rotated.position::<V>().add(transform.offset),
@@ -930,7 +953,7 @@ impl<S: IConvexShape> CollisionShape<S> {
     }
 
     /// check if this shape contains a point
-    pub fn contains_point<V: IVec2>(&self, transform: Transform<V>, point: V) -> bool {
+    pub fn contains_point<V: IVec2>(&self, transform: RigidTransform<V>, point: V) -> bool {
         for hull in &self.0 {
             let tshape = TransformedConvexShapeRef::new(hull, &transform);
 
@@ -944,9 +967,9 @@ impl<S: IConvexShape> CollisionShape<S> {
     /// check if this shape intersects with another, given each shape's transform
     pub fn intersects<V: IVec2>(
         &self,
-        transform: &Transform<V>,
+        transform: &RigidTransform<V>,
         other: &Self,
-        other_transform: &Transform<V>,
+        other_transform: &RigidTransform<V>,
     ) -> bool {
         for hull in &self.0 {
             for other_hull in &other.0 {
@@ -968,7 +991,7 @@ impl<S: IConvexShape> CollisionShape<S> {
 /// creates an aabb from a list of convex shapes
 /// returns None of there are no shapes in the iterator
 pub fn compute_advanced_aabb<'a, R: IRect + 'a, V: IVec2, S: IConvexShape + 'a>(
-    transform: &Transform<V>,
+    transform: &RigidTransform<V>,
     mut shapes: impl Iterator<Item = &'a CollisionShape<S>>,
 ) -> Option<R> {
     let mut aabb = shapes.next()?.aabb_transformed::<V, R>(&transform);
@@ -1049,6 +1072,28 @@ fn minowski_support_2d<V: IVec2, S: IConvexShape, T: IConvexShape>(
 ) -> V {
     s1.furthest_point(direction)
         .sub(s2.furthest_point(direction.neg()))
+}
+
+/// a collection of points implementing IConvexShape
+/// if the contained iterator is empty, the furthest point in any given direction
+/// is assumed to be (0, 0)
+#[derive(Debug, Clone)]
+pub struct PointCloud<I: Iterator<Item = V> + Clone, V: IVec2>(pub I);
+
+impl<I: Iterator<Item = V> + Clone, V: IVec2> IConvexShape for PointCloud<I, V> {
+    fn furthest_point<V2: IVec2>(&self, direction: V2) -> V2 {
+        let mut max_point = V::origin();
+        let mut max_dot = max_point.dot(direction);
+
+        for point in self.0.clone() {
+            let dot = point.dot(direction);
+            if dot > max_dot {
+                max_dot = dot;
+                max_point = point;
+            }
+        }
+        V2::from_other(max_point)
+    }
 }
 
 #[derive(Debug, Clone)]

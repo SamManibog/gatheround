@@ -1,113 +1,91 @@
-#[derive(Clone, Default)]
-pub struct BitVec {
+#[derive(Debug, Clone, Default)]
+pub struct BitSet {
     bytes: Vec<u8>,
-    bit_count: usize,
+    len: usize,
 }
 
-impl BitVec {
+impl BitSet {
     pub fn new() -> Self {
-        Self {
-            bytes: Vec::new(),
-            bit_count: 0,
-        }
+        Self::with_capacity(8)
     }
 
     /// creates a new bitvec with the given number of bits
-    pub fn with_size(bit_count: usize) -> Self {
+    pub fn with_capacity(bit_count: usize) -> Self {
         Self {
-            bytes: vec![0; (bit_count + 7) / 8],
-            bit_count,
+            bytes: vec![0; bit_count.div_ceil(8)],
+            len: 0,
         }
     }
 
     pub fn len(&self) -> usize {
-        self.bit_count
+        self.len
     }
 
-    /// expands the bitvec with more zeros to the specified bit count
-    pub fn expand(&mut self, count: usize) {
-        if count <= self.bit_count {
+    /// gets the union of this bit vec and another
+    pub fn union(&mut self, other: &Self) {
+        self.expand(other.bytes.len());
+
+        for (byte, other_byte) in self.bytes.iter_mut().zip(other.bytes.iter()) {
+            let initial_set_count = byte.count_ones() as usize;
+            *byte |= other_byte;
+            let final_set_count = byte.count_ones() as usize;
+
+            self.len += final_set_count - initial_set_count;
+        }
+    }
+
+    /// gets the intersection of this bit vec and another
+    pub fn intersection(&mut self, other: &Self) {
+        for (byte, other_byte) in self.bytes.iter_mut().zip(other.bytes.iter()) {
+            let initial_set_count = byte.count_ones() as usize;
+            *byte &= other_byte;
+            let final_set_count = byte.count_ones() as usize;
+
+            self.len -= initial_set_count + final_set_count;
+        }
+    }
+
+    /// expands the bitvec to the given number of bytes
+    fn expand(&mut self, byte_count: usize) {
+        if byte_count <= self.bytes.len() {
             return;
         }
-
-        // fill full byte first
-        let unfinished_bits = 8 - (self.bit_count % 8);
-        if unfinished_bits != 8 {
-            let additional = unfinished_bits.min(count.saturating_sub(self.bit_count));
-            self.bit_count += additional;
-        }
-
-        if count <= self.bit_count {
-            return;
-        }
-
-        // add new bytes
-        let expansion_bytes = ((count + 7) / 8) as usize;
-        self.bytes.resize(expansion_bytes, 0);
-        self.bit_count = count;
+        self.bytes.resize(byte_count, 0);
     }
 
     /// sets the given bit
     pub fn set(&mut self, index: usize) {
-        if index >= self.bit_count {
-            return;
-        }
+        self.expand(index.div_ceil(8));
 
-        if let Some(byte) = self.bytes.get_mut((index / 8) as usize) {
-            let bit_idx = index % 8;
+        let byte = &mut self.bytes[index / 8];
+        let bit_idx = index % 8;
 
-            let bit_mask: u8 = 1 << bit_idx;
-            *byte |= bit_mask;
-        }
+        let bit_mask: u8 = 1 << bit_idx;
+        *byte |= bit_mask;
     }
 
     /// clears the given bit
     pub fn clear(&mut self, index: usize) {
-        if index >= self.bit_count {
+        if index / 8 >= self.bytes.len() {
             return;
         }
 
-        if let Some(byte) = self.bytes.get_mut((index / 8) as usize) {
-            let bit_idx = index % 8;
-
-            let bit_mask: u8 = !(1 << bit_idx);
-            *byte &= bit_mask;
-        }
-    }
-
-    /// sets the given bit, returning the original value, if stored
-    pub fn set_by_bool(&mut self, index: usize, on: bool) -> Option<bool> {
-        if index >= self.bit_count {
-            return None;
-        }
-
-        let byte = self.bytes.get_mut((index / 8) as usize)?;
+        let byte = &mut self.bytes[index / 8];
         let bit_idx = index % 8;
 
-        // determine original value
-        let bit_mask: u8 = 1 << bit_idx;
-        let output = *byte & bit_mask != 0;
-
-        // modify the value
-        if on {
-            *byte |= bit_mask;
-        } else {
-            *byte &= !bit_mask;
-        }
-
-        Some(output)
+        let bit_mask: u8 = !(1 << bit_idx);
+        *byte &= bit_mask;
     }
 
     /// gets the given bit, if stored
-    pub fn test(&self, index: usize) -> Option<bool> {
-        if index >= self.bit_count {
-            return None;
+    pub fn test(&self, index: usize) -> bool {
+        if index / 8 >= self.bytes.len() {
+            return false;
         }
 
-        let byte = self.bytes.get((index / 8) as usize)?;
+        let byte = self.bytes[index / 8];
         let bit_idx = index % 8;
-
         let bit_mask: u8 = 1 << bit_idx;
-        Some(byte & bit_mask != 0)
+        byte & bit_mask != 0
     }
 }

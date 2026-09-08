@@ -6,7 +6,7 @@ use std::{
     u32,
 };
 
-use crate::{bitvec::BitVec, lua::FromLuaValue};
+use crate::{bitvec::BitSet, lua::FromLuaValue};
 
 pub trait EntityTrait:
     Debug
@@ -120,7 +120,7 @@ pub struct EntityManager<E: EntityTrait> {
     free_entity_queue: VecDeque<E>,
 
     /// the usable entity ids, including free ones
-    entities: BitVec,
+    entities: BitSet,
 }
 
 impl<E: EntityTrait> Default for EntityManager<E> {
@@ -137,7 +137,7 @@ impl<E: EntityTrait> EntityManager<E> {
         }
 
         Self {
-            entities: BitVec::with_size(INITIAL_ENTITY_CAPACITY),
+            entities: BitSet::with_capacity(INITIAL_ENTITY_CAPACITY),
             free_entity_queue,
         }
     }
@@ -158,7 +158,7 @@ impl<E: EntityTrait> EntityManager<E> {
     /// checks if an entity is used, O(1)
     /// if the entity came from another entity manager, this function might panic
     pub fn is_used(&self, entity: E) -> bool {
-        self.entities.test(entity.id() as usize).unwrap()
+        self.entities.test(entity.id() as usize)
     }
 
     /// returns an entity to the set of unused entities
@@ -293,6 +293,68 @@ impl<E: EntityTrait> NamedEntityManager<E> {
     }
 }
 
+/// manages a sparse set of entities, supporting fast lookup, insert, and deletion, but not iteration
+#[derive(Debug, Clone)]
+pub struct SparseSet<E: EntityTrait> {
+    entities: BitSet,
+    phantom: PhantomData<E>,
+}
+
+impl<E: EntityTrait> SparseSet<E> {
+    /// creates a new dense storage
+    pub fn new() -> Self {
+        Self {
+            entities: BitSet::with_capacity(INITIAL_ENTITY_CAPACITY),
+            phantom: PhantomData,
+        }
+    }
+
+    /// creates a new dense storage with the given capacity
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            entities: BitSet::with_capacity(capacity),
+            phantom: PhantomData,
+        }
+    }
+
+    /// combine this set with another
+    pub fn union(&mut self, other: Self) {
+        self.entities.union(&other.entities);
+    }
+
+    /// returns the number of entities managed
+    pub fn len(&self) -> usize {
+        self.entities.len()
+    }
+
+    /// whether this contains no entities/data
+    pub fn is_empty(&self) -> bool {
+        self.len() <= 0
+    }
+
+    /// inserts a component into this manager
+    /// returns true if the entity was already contained
+    pub fn insert(&mut self, entity: E) -> bool {
+        let idx = entity.id() as usize;
+        let out = self.entities.test(idx);
+        self.entities.set(idx);
+        out
+    }
+
+    /// removes an entity from this manager, returning true if the entity was contained
+    pub fn remove(&mut self, entity: E) -> bool {
+        let idx = entity.id() as usize;
+        let out = self.entities.test(idx);
+        self.entities.clear(idx);
+        out
+    }
+
+    /// checks if the manager contains the given entity
+    pub fn contains(&self, entity: E) -> bool {
+        self.entities.test(entity.id() as usize)
+    }
+}
+
 /// manages a set of entities supporting fast (but unordered) iteration over them
 #[derive(Debug, Clone)]
 pub struct DenseSet<E: EntityTrait> {
@@ -310,6 +372,20 @@ impl<E: EntityTrait> DenseSet<E> {
     pub fn new() -> Self {
         Self {
             entities: Default::default(),
+        }
+    }
+
+    /// creates a new dense storage with the given capacity
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            entities: DenseComponentManager::with_capacity(capacity),
+        }
+    }
+
+    /// combine this set with another
+    pub fn union(&mut self, other: Self) {
+        for entity in other.entities.entities {
+            self.insert(entity);
         }
     }
 

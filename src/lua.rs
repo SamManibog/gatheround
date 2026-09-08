@@ -15,7 +15,7 @@ use raylib::{
 use crate::{
     board::BoardManager,
     ecs::EntityTrait,
-    geometry::{ConvexHull, IConvexShape, IRect, IVec2, Transform, vec2_from_lua_table},
+    geometry::{ConvexHull, IConvexShape, IRect, IVec2, RigidTransform, vec2_from_lua_table},
     intermediate_representations::{EntityIdentifier, PieceIR, VisualInfo},
     raylib_integrations::RaylibRenderer,
 };
@@ -268,7 +268,7 @@ pub fn get_game_lua_instance(
                 let entity = entity_result.unwrap();
 
                 // try to parse the lua table
-                let object_result = Transform::try_from_lua_table(&table);
+                let object_result = RigidTransform::try_from_lua_table(&table);
                 if let Err(msg) = object_result {
                     return Err(mlua::Error::RuntimeError(msg));
                 }

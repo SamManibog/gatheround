@@ -1,10 +1,12 @@
 use std::{
     cell::RefCell,
     collections::{BTreeMap, VecDeque},
+    ops::Mul,
     path::Path,
     rc::Rc,
 };
 
+use mlua::MultiValue;
 use raylib::{
     RaylibHandle, RaylibThread, callbacks,
     drawing::{
@@ -17,9 +19,17 @@ use raylib::{
 };
 
 use crate::{
-    board::BoardManager, color::IColor, ecs::EntityTrait, geometry::{ConvexHull, IConvexShape, IRect, IVec2}, intermediate_representations::{
-        Alignment, EntityIdentifier, ImageTransform, PatternInfo, PatternType, TextboxInfo, VisualComponent, VisualInfo
-    }, lua::get_game_lua_instance, renderer::{GlobalAssets, IRenderer}, resources::{PlayerColor, TextureInfo, VisualComponentProvider}
+    board::BoardManager,
+    color::IColor,
+    ecs::EntityTrait,
+    geometry::{ConvexHull, IConvexShape, IRect, IVec2},
+    intermediate_representations::{
+        Alignment, EntityIdentifier, ImageTransform, PatternInfo, PatternType, TextboxInfo,
+        VisualComponent, VisualInfo,
+    },
+    lua::get_game_lua_instance,
+    renderer::{GlobalAssets, IRenderer},
+    resources::{PlayerColor, TextureInfo, VisualComponentProvider},
 };
 
 const FRAME_RATE: u32 = 60;
@@ -924,8 +934,8 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
                         let points = shape.points();
                         let mut point_iter = shape.points().iter().peekable();
                         while let (Some(p1), Some(p2)) = (point_iter.next(), point_iter.peek()) {
-                            let p1 = transform.transform_point(*p1);
-                            let p2 = transform.transform_point(**p2);
+                            let p1 = transform.apply_to_point(*p1);
+                            let p2 = transform.apply_to_point(**p2);
                             painter.draw_line_ex(
                                 p1,
                                 p2,
@@ -934,8 +944,8 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
                             );
                             painter.draw_line_ex(p1, p2, Self::DEBUG_THICKNESS, color);
                         }
-                        let p1 = transform.transform_point(*points.first().unwrap());
-                        let p2 = transform.transform_point(*points.last().unwrap());
+                        let p1 = transform.apply_to_point(*points.first().unwrap());
+                        let p2 = transform.apply_to_point(*points.last().unwrap());
                         painter.draw_line_ex(p1, p2, Self::DEBUG_OUTLINE_THICKNESS, Color::BLACK);
                         painter.draw_line_ex(p1, p2, Self::DEBUG_THICKNESS, color);
                     }
@@ -1005,8 +1015,8 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
                                 while let (Some(p1), Some(p2)) =
                                     (point_iter.next(), point_iter.peek())
                                 {
-                                    let p1 = transform.transform_point(*p1);
-                                    let p2 = transform.transform_point(**p2);
+                                    let p1 = transform.apply_to_point(*p1);
+                                    let p2 = transform.apply_to_point(**p2);
                                     painter.draw_line_ex(
                                         p1,
                                         p2,
@@ -1015,8 +1025,8 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
                                     );
                                     painter.draw_line_ex(p1, p2, Self::DEBUG_THICKNESS, color);
                                 }
-                                let p1 = transform.transform_point(*points.first().unwrap());
-                                let p2 = transform.transform_point(*points.last().unwrap());
+                                let p1 = transform.apply_to_point(*points.first().unwrap());
+                                let p2 = transform.apply_to_point(*points.last().unwrap());
                                 painter.draw_line_ex(
                                     p1,
                                     p2,
@@ -1417,54 +1427,45 @@ pub fn run_game(project_path: &Path) {
                 if let Some(piece) = board.piece_to_grab(test_player) {
                     drop(board);
 
-                    let allow_grab_fn: mlua::Function = lua
+                    let grab_attempted_fn: mlua::Function = lua
                         .globals()
-                        .raw_get("allowGrab")
-                        .expect("allowGrab has been overwritten to a non-function value.");
+                        .raw_get("grabAttempted")
+                        .expect("grabAttempted has been overwritten to a non-function value.");
                     let name_string = lua
                         .create_string(test_player.name())
                         .expect("unable to create player name string");
 
-                    let allow_grab: bool = allow_grab_fn
+                    let _: MultiValue = grab_attempted_fn
                         .call((name_string, piece.id()))
-                        .expect("allowGrab has been overwritten with an invalid function.");
-
-                    if allow_grab {
-                        let mut board = board_cell.borrow_mut();
-                        let _ = board.attempt_grab(test_player, EntityIdentifier::Entity(piece));
-                    }
+                        .expect("grabAttempted has been overwritten with an invalid function.");
                 }
             } else if rl.is_mouse_button_pressed(raylib::ffi::MouseButton::MOUSE_BUTTON_RIGHT) {
                 drop(rl);
 
                 let board = board_cell.borrow_mut();
-                if let Some(piece) = board.grabbed_piece(test_player) {
-                    let overlap_table = board.query_piece_overlaps(&lua, piece);
+                if let Some(piece) = board.grabbed_item(test_player) {
                     drop(board);
 
-                    let allow_drop_fn: mlua::Function = lua
+                    let drop_attempted_fn: mlua::Function = lua
                         .globals()
-                        .raw_get("allowDrop")
-                        .expect("allowDrop has been overwritten to a non-function value.");
+                        .raw_get("dropAttempted")
+                        .expect("dropAttempted has been overwritten to a non-function value.");
                     let name_string = lua
                         .create_string(test_player.name())
                         .expect("unable to create player name string");
 
-                    let allow_drop: bool = allow_drop_fn
-                        .call((name_string, piece.id(), overlap_table))
-                        .expect("allowDrop has been overwritten with an invalid function.");
-
-                    if allow_drop {
-                        let mut board = board_cell.borrow_mut();
-                        board.drop_held_piece(test_player);
-                    }
+                    let _: MultiValue = drop_attempted_fn
+                        .call((name_string, piece.id()))
+                        .expect("dropAttempted has been overwritten with an invalid function.");
                 }
             }
         }
         {
             let rl = rl_cell.borrow_mut();
             let mut board = board_cell.borrow_mut();
-            board.set_player_position(test_player, rl.get_mouse_position().sub(padding));
+            board
+                .set_player_position(test_player, rl.get_mouse_position().sub(padding))
+                .expect("player should be valid");
         }
 
         // update commands

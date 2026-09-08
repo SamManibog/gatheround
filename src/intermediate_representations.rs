@@ -4,8 +4,8 @@ use crate::{
     color::{IColor, color_from_lua_table},
     ecs::EntityTrait,
     geometry::{
-        CollisionShape, IConvexShape, IRect, IVec2, Transform, rect_from_lua_table,
-        vec2_from_lua_table,
+        CollisionShape, IConvexShape, IRect, IVec2, RigidTransform, rect_from_lua_table,
+        vec2_from_lua_table, vec2_from_lua_value,
     },
     lua::{FromLuaTable, FromLuaValue, vector_from_lua_value},
     resources::CollisionShapeEntity,
@@ -706,6 +706,142 @@ impl<S: IConvexShape + FromLuaTable> FromLuaValue for CollisionShapeIR<S> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct PileIR<V: IVec2> {
+    /// the name of the pile
+    pub name: Option<String>,
+
+    /// the transform of the pile
+    pub transform: RigidTransform<V>,
+
+    /// categorizations
+    pub categories: Vec<String>,
+
+    /// the relative of the snapping circle
+    pub snap_offset: V,
+
+    /// the radius of the snapping cirle
+    /// circle is placed relative to offset of the top piece
+    pub snap_radius: f32,
+
+    /// the draw layer of the pile
+    pub draw_layer: i32,
+}
+
+impl<V: IVec2> FromLuaValue for PileIR<V> {
+    fn try_from_lua_value(value: &Value) -> Result<Self, String> {
+        match value {
+            Value::Table(table) => Self::try_from_lua_table(&table),
+            _ => Err(format!("non-table value.")),
+        }
+    }
+}
+
+impl<V: IVec2> FromLuaTable for PileIR<V> {
+    fn try_from_lua_table(table: &Table) -> Result<Self, String> {
+        let name = if let Ok(val) = table.raw_get::<Value>("name") {
+            if let Value::Nil = val {
+                None
+            } else {
+                match String::try_from_lua_value(&val) {
+                    Ok(t) => Some(t),
+                    Err(msg) => return Err(format!("Invalid name field: {msg}")),
+                }
+            }
+        } else {
+            return Err(format!("Invalid name field."));
+        };
+
+        let transform = if let Ok(val) = table.raw_get::<Value>("transform") {
+            if let Value::Nil = val {
+                Default::default()
+            } else {
+                match RigidTransform::try_from_lua_value(&val) {
+                    Ok(t) => t,
+                    Err(msg) => return Err(format!("Invalid transform field: {msg}")),
+                }
+            }
+        } else {
+            return Err(format!("Invalid transform field."));
+        };
+
+        let snap_offset = if let Ok(val) = table.raw_get::<Value>("snap_offset") {
+            if let Value::Nil = val {
+                V::from_xy(0.0, 0.0)
+            } else {
+                match vec2_from_lua_value(&val) {
+                    Ok(t) => t,
+                    Err(msg) => return Err(format!("Invalid snap_offset field: {msg}")),
+                }
+            }
+        } else {
+            return Err(format!("Invalid position field."));
+        };
+
+        let snap_radius = if let Ok(value) = table.raw_get::<Value>("snap_radius") {
+            match &value {
+                Value::Nil => 0.0,
+                Value::Number(float) => {
+                    *float as f32
+                }
+                Value::Integer(int) => {
+                    *int as f32
+                }
+                _ => return Err(format!("Invalid snap_radius field: non-numeric value.")),
+            }
+        } else {
+            return Err(format!("Invalid snap_radius field."));
+        };
+
+        let draw_layer = if let Ok(value) = table.raw_get::<Value>("draw_layer") {
+            match &value {
+                Value::Nil => 0,
+                Value::Number(float) => {
+                    if float.round() != *float {
+                        return Err(format!("Invalid draw_layer field: non-integer value."));
+                    }
+                    if float.clamp(i32::MIN as f64, i32::MAX as f64) != *float {
+                        return Err(format!(
+                            "Invalid draw_layer field: must be in range [{}, {}].",
+                            i32::MIN,
+                            i32::MAX
+                        ));
+                    }
+                    *float as i32
+                }
+                Value::Integer(int) => {
+                    if (*int).clamp(i32::MIN as i64, i32::MAX as i64) != *int {
+                        return Err(format!(
+                            "Invalid draw_layer field: must be in range [{}, {}].",
+                            i32::MIN,
+                            i32::MAX
+                        ));
+                    }
+                    *int as i32
+                }
+                _ => return Err(format!("Invalid draw_layer field: non-integer value.")),
+            }
+        } else {
+            return Err(format!("Invalid draw_layer field."));
+        };
+
+        let categories = if let Ok(value) = table.raw_get::<Value>("categories") {
+            vector_from_lua_value(&value, "categories field", "category")?
+        } else {
+            return Err(format!("Invalid categories field."));
+        };
+
+        Ok(Self {
+            name,
+            transform,
+            snap_offset,
+            snap_radius,
+            categories,
+            draw_layer,
+        })
+    }
+}
+
 /// collider data that serves as an intermediary between lua tables and a pieces collider
 #[derive(Debug, Clone)]
 pub struct PieceColliderIR<S: IConvexShape + FromLuaTable> {
@@ -762,7 +898,7 @@ pub struct PieceIR<S: IConvexShape + FromLuaTable, V: IVec2> {
     pub texture: String,
 
     /// the transform for the piece
-    pub transform: Transform<V>,
+    pub transform: RigidTransform<V>,
 
     /// colliders
     pub colliders: Vec<PieceColliderIR<S>>,
@@ -811,7 +947,7 @@ impl<S: IConvexShape + FromLuaTable, V: IVec2> FromLuaTable for PieceIR<S, V> {
             if let Value::Nil = val {
                 Default::default()
             } else {
-                match Transform::try_from_lua_value(&val) {
+                match RigidTransform::try_from_lua_value(&val) {
                     Ok(t) => t,
                     Err(msg) => return Err(format!("Invalid transform field: {msg}")),
                 }
