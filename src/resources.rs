@@ -16,7 +16,7 @@ use crate::{
     intermediate_representations::VisualInfo,
     lua::FromLuaValue,
     quadtree::QuadTree,
-    renderer::IRenderer,
+    renderer::ITextureCompiler,
 };
 
 #[cfg(target_os = "windows")]
@@ -178,10 +178,14 @@ impl<V: IVec2> PileManager<V> {
     }
 
     /// removes an item from any pile it may be a part of
-    pub fn unpile(&mut self, piece: PieceEntity) {
+    /// returns the pile that contained the piece
+    pub fn unpile(&mut self, piece: PieceEntity) -> Option<PieceEntity> {
         if let Some(pile) = self.get_containing_pile(piece) {
             let pieces = &mut self.piles.get_mut(pile).unwrap().pieces;
             pieces.remove(pieces.iter().position(|p| *p == piece).unwrap());
+            Some(pile)
+        } else {
+            None
         }
     }
 
@@ -445,6 +449,11 @@ impl DrawLayerManager {
         self.piece_draw_layers.get(entity).copied()
     }
 
+    /// the number of draw layers
+    pub fn len(&self) -> usize {
+        self.draw_layer_refs.len()
+    }
+
     pub fn layer_iter(&self) -> impl Iterator<Item = i32> {
         self.draw_layer_refs.keys().copied()
     }
@@ -705,11 +714,11 @@ pub struct PlayerManager<V: IVec2> {
     /// positions of player's hands
     positions: DenseComponentManager<PlayerColor, V>,
 
-    /// the piece being grabbed by players
-    grab_targets: DenseComponentManager<PlayerColor, PieceEntity>,
+    /// the piece being held by players
+    held_items: DenseComponentManager<PlayerColor, PieceEntity>,
 
-    /// the player grabbing a given piece
-    rev_grab_targets: DenseComponentManager<PieceEntity, PlayerColor>,
+    /// the player holding a given piece
+    item_holders: DenseComponentManager<PieceEntity, PlayerColor>,
 }
 
 impl<V: IVec2> Default for PlayerManager<V> {
@@ -718,8 +727,8 @@ impl<V: IVec2> Default for PlayerManager<V> {
             players: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
             colors: [const { String::new() }; PlayerColor::COLOR_COUNT],
             positions: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
-            grab_targets: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
-            rev_grab_targets: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
+            held_items: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
+            item_holders: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
         }
     }
 }
@@ -754,8 +763,8 @@ impl<V: IVec2> PlayerManager<V> {
     }
 
     /// returns an iterator over all held pieces
-    pub fn grab_target_iter(&self) -> impl Iterator<Item = PieceEntity> {
-        self.grab_targets.component_iter().cloned()
+    pub fn held_item_iter(&self) -> impl Iterator<Item = PieceEntity> {
+        self.held_items.component_iter().cloned()
     }
 
     /// returns an iterator over players and their positions
@@ -822,39 +831,39 @@ impl<V: IVec2> PlayerManager<V> {
         }
     }
 
-    /// checks if the player is grabbing a piece
-    pub fn is_grabbing(&self, player: PlayerColor) -> bool {
-        self.grab_targets.contains(player)
+    /// checks if the player is holding a piece
+    pub fn is_holding(&self, player: PlayerColor) -> bool {
+        self.held_items.contains(player)
     }
 
-    /// checks if a piece is being grabbed by any of the player
-    pub fn is_grabbed(&self, piece: PieceEntity) -> bool {
-        self.rev_grab_targets.contains(piece)
+    /// checks if a piece is being held by any of the player
+    pub fn is_held(&self, piece: PieceEntity) -> bool {
+        self.item_holders.contains(piece)
     }
 
-    /// gets the player grabbing the given piece
-    pub fn get_grabber(&self, piece: PieceEntity) -> Option<PlayerColor> {
-        self.rev_grab_targets.get(piece).copied()
+    /// gets the player holding the given piece
+    pub fn get_holder(&self, piece: PieceEntity) -> Option<PlayerColor> {
+        self.item_holders.get(piece).copied()
     }
 
-    /// gets the piece that the player is grabbing
-    pub fn get_grab_target(&self, player: PlayerColor) -> Option<PieceEntity> {
-        self.grab_targets.get(player).copied()
+    /// gets the piece that the player is holding
+    pub fn get_held_item(&self, player: PlayerColor) -> Option<PieceEntity> {
+        self.held_items.get(player).copied()
     }
 
-    /// sets the piece that the player is grabbing, returning the old grab target
-    /// panics if the target is already being grabbed by another player
-    pub fn set_grab_target(
+    /// sets the piece that the player is holding, returning the old held item
+    /// panics if the target is already being held by another player
+    pub fn set_held_item(
         &mut self,
         player: PlayerColor,
         target: Option<PieceEntity>,
     ) -> Option<PieceEntity> {
         if let Some(t) = target {
-            assert!(!self.rev_grab_targets.contains(t));
-            self.grab_targets.insert(player, t)
+            assert!(!self.item_holders.contains(t));
+            self.held_items.insert(player, t)
         } else {
-            if let Some(piece) = self.grab_targets.remove(player) {
-                self.rev_grab_targets.remove(piece);
+            if let Some(piece) = self.held_items.remove(player) {
+                self.item_holders.remove(piece);
                 Some(piece)
             } else {
                 None
@@ -905,7 +914,7 @@ impl<'a, F, I> VisualComponentProvider<'a, F, I> {
         }
     }
 
-    pub fn get_or_load_font<R: IRenderer<Font = F>>(
+    pub fn get_or_load_font<R: ITextureCompiler<Font = F>>(
         &mut self,
         renderer: &mut R,
         font_name: &String,
@@ -924,7 +933,7 @@ impl<'a, F, I> VisualComponentProvider<'a, F, I> {
         fonts.get_font(font_name, size, characters)
     }
 
-    pub fn get_or_load_image<R: IRenderer<Texture = I>>(
+    pub fn get_or_load_image<R: ITextureCompiler<Texture = I>>(
         &mut self,
         renderer: &mut R,
         path: &String,
@@ -976,7 +985,7 @@ impl<F> FontManager<F> {
 
     /// batch loads multiple font sizes at once
     /// returns true if all sizes could be loaded
-    pub fn batch_load_font<R: IRenderer<Font = F>>(
+    pub fn batch_load_font<R: ITextureCompiler<Font = F>>(
         &mut self,
         renderer: &mut R,
         project_path: &Path,
@@ -995,7 +1004,7 @@ impl<F> FontManager<F> {
 
     /// batch loads multiple font sizes at once
     /// returns true if all sizes could be loaded
-    pub fn batch_load_font_helper<R: IRenderer<Font = F>>(
+    pub fn batch_load_font_helper<R: ITextureCompiler<Font = F>>(
         &mut self,
         renderer: &mut R,
         font_dir: &Path,
@@ -1075,7 +1084,7 @@ impl<F> FontManager<F> {
     }
 
     /// loads a single font, returning true on success or if the font was already loaded
-    pub fn load_font<R: IRenderer<Font = F>>(
+    pub fn load_font<R: ITextureCompiler<Font = F>>(
         &mut self,
         renderer: &mut R,
         project_path: &Path,
@@ -1142,7 +1151,7 @@ impl<T, F> TextureManager<T, F> {
         C: IColor,
         R: IRect,
         V: IVec2,
-        IR: IRenderer<Font = F, Texture = T, Color = C, Rectangle = R, Vector2 = V>,
+        IR: ITextureCompiler<Font = F, Texture = T, Color = C, Rectangle = R, Vector2 = V>,
     {
         let provider = VisualComponentProvider {
             project_path,
@@ -1238,7 +1247,7 @@ impl<T, F> TextureManager<T, F> {
     }
 
     /// loads a font, returning true on successful load
-    pub fn load_font<R: IRenderer<Font = F>>(
+    pub fn load_font<R: ITextureCompiler<Font = F>>(
         &mut self,
         renderer: &mut R,
         project_path: &Path,
@@ -1261,7 +1270,7 @@ impl<T, F> TextureManager<T, F> {
     }
 
     /// loads an image, returning true on successful load
-    pub fn load_image<R: IRenderer<Texture = T>>(
+    pub fn load_image<R: ITextureCompiler<Texture = T>>(
         &mut self,
         renderer: &mut R,
         project_path: &Path,

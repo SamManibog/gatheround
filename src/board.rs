@@ -13,11 +13,11 @@ use crate::{
         CollisionShapeIR, EntityIdentifier, PieceColliderIR, PieceIR, PileIR, VisualInfo,
     },
     lua::FromLuaTable,
-    renderer::{GlobalAssets, IRenderer},
+    renderer::{GlobalAssets, ITextureCompiler},
     resources::{
         CategoryManager, CollisionLayerEntity, CollisionLayerManager, CollisionShapeEntity,
-        DrawLayerManager, PieceCollider, PieceEntity, PlayerColor, PlayerManager, QuadTreeManager,
-        PileManager, TextureEntity, TextureManager,
+        DrawLayerManager, PieceCollider, PieceEntity, PileManager, PlayerColor, PlayerManager,
+        QuadTreeManager, TextureEntity, TextureManager,
     },
 };
 
@@ -330,6 +330,44 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
         Ok(())
     }
 
+    /// centers the item on the board
+    pub fn center_item(
+        &mut self,
+        entity: EntityIdentifier<PieceEntity>,
+    ) -> Result<(), String> {
+        let entity = self.validate_entity(entity)?;
+        self.center_entity_unchekced(entity);
+        Ok(())
+    }
+
+    /// centers the item on the board
+    /// does not check if the entity is valid
+    fn center_entity_unchekced(&mut self, entity: PieceEntity) {
+        let global_transform = self.get_entity_global_transform(entity);
+        let center = self.dimensions().scaled(0.5);
+        let delta = center.sub(global_transform.offset);
+
+        if let Some(parent) = self.pile_manager.get_containing_pile(entity) {
+            let parent_transform = self.entity_transforms.get(parent).unwrap();
+            self.set_pile_transform_unchecked(
+                parent,
+                RigidTransform {
+                    offset: parent_transform.offset.add(delta),
+                    angle: parent_transform.angle,
+                },
+            );
+        } else {
+            let original_transform = self.entity_transforms.get(entity).unwrap();
+            self.set_transform_unchecked(
+                entity,
+                RigidTransform {
+                    offset: original_transform.offset.add(delta),
+                    angle: original_transform.angle,
+                },
+            );
+        }
+    }
+
     /// sets the transform of a pile or piece without checking whether the entity is valid
     fn set_transform_unchecked(&mut self, entity: PieceEntity, transform: RigidTransform<V>) {
         if self.pile_manager.is_pile(entity) {
@@ -428,7 +466,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
 
             self.entity_transforms.insert(piece, transform);
 
-            // update quadtree only if player is not grabbed
+            // update quadtree only if player is not held
             // (setting aabb may insert it)
             if !self.is_entity_held(piece) {
                 self.quadtree.set_aabb(piece, final_aabb);
@@ -564,10 +602,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
 
             // update position based on new colliders
             if let Some(pile) = self.pile_manager.get_containing_pile(piece) {
-                self.set_pile_transform_unchecked(
-                    pile,
-                    *self.entity_transforms.get(pile).unwrap(),
-                );
+                self.set_pile_transform_unchecked(pile, *self.entity_transforms.get(pile).unwrap());
             } else {
                 self.set_piece_transform_unchecked(
                     piece,
@@ -626,6 +661,11 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
         self.entity_draw_layers.layer_iter()
     }
 
+    /// returns the number of draw layers
+    pub fn draw_layer_count(&self) -> usize {
+        self.entity_draw_layers.len()
+    }
+
     /// returns an iterator over texture-owning pieces and their transforms in the order in which
     /// they should be drawn (appearing first means should be on the bottom)
     pub fn texture_draw_iter(
@@ -667,16 +707,16 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
         }
     }
 
-    /// returns an iterator over the textures of grabbed pieces and their transforms
-    /// grab targets should be drawn on top of all other pieces
-    pub fn grab_target_draw_iter(
+    /// returns an iterator over the textures of held pieces and their transforms
+    /// held items should be drawn on top of all other pieces
+    pub fn held_item_draw_iter(
         &self,
     ) -> impl Iterator<Item = (&T, Option<&[PieceCollider]>, RigidTransform<V>)> {
         BoardDrawIter {
             board: &self,
             layered_entity_iter: self
                 .player_manager
-                .grab_target_iter()
+                .held_item_iter()
                 .filter(|entity| if self.is_hidden(*entity) { false } else { true }),
             pile_iter: None,
             output_filter_map: |piece| {
@@ -710,7 +750,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
         global_assets: &'a GlobalAssets<T>,
     ) -> impl Iterator<Item = (&'a T, V, C)> {
         self.player_manager.position_iter().map(|(color, pos)| {
-            let texture = if self.player_manager.is_grabbing(color) {
+            let texture = if self.player_manager.is_holding(color) {
                 &global_assets.closed_hand_texture
             } else {
                 &global_assets.open_hand_texture
@@ -736,7 +776,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
     ) -> Result<(), String>
     where
         C: IColor,
-        IR: IRenderer<Font = F, Texture = T, Color = C, Rectangle = R, Vector2 = V>,
+        IR: ITextureCompiler<Font = F, Texture = T, Color = C, Rectangle = R, Vector2 = V>,
     {
         self.texture_manager.load_texture(
             project_path,
@@ -783,7 +823,11 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
     /// both contained tables are lists of overlapping layers/pieces
     /// layers are provided as collision layer names
     /// pieces are provided as piece ids
-    pub fn lua_query_overlaps(&self, lua: &Lua, entity: EntityIdentifier<PieceEntity>) -> Result<mlua::Table, String> {
+    pub fn lua_query_overlaps(
+        &self,
+        lua: &Lua,
+        entity: EntityIdentifier<PieceEntity>,
+    ) -> Result<mlua::Table, String> {
         let entity = self.validate_entity(entity)?;
 
         let (layers, pieces) = if self.pile_manager.is_pile(entity) {
@@ -910,7 +954,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             out
         };
 
-        let transform = &self.get_global_transform(piece);
+        let transform = &self.get_entity_global_transform(piece);
 
         // can unwrap aabb because only non-empty collider lists are inserted into collider component
         let aabb = geometry::compute_advanced_aabb(
@@ -931,7 +975,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
 
             // piece-associated data
             let p_colliders = self.piece_colliders.get(p).unwrap();
-            let p_transform = &self.get_global_transform(p);
+            let p_transform = &self.get_entity_global_transform(p);
 
             'collider_loop: for p_collider in p_colliders {
                 // skip layers already checked
@@ -968,11 +1012,6 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
         self.texture_manager.contains_texture_name(name)
     }
 
-    /// returns the item that a player is grabbing
-    pub fn grabbed_item(&self, player: PlayerColor) -> Option<PieceEntity> {
-        self.player_manager.get_grab_target(player)
-    }
-
     /// returns the piece a player should grab, should it attempt to
     pub fn piece_to_grab(&mut self, player: PlayerColor) -> Option<PieceEntity> {
         let position = self.player_manager.get_position(player)?;
@@ -989,7 +1028,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
                 return false;
             }
 
-            let transform = self.get_global_transform(*piece);
+            let transform = self.get_entity_global_transform(*piece);
             let shape_iter = self
                 .piece_colliders
                 .get(*piece)
@@ -1018,13 +1057,15 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
         // high_pieces is the set of all pieces
         let mut high_unpiled = SparseSet::new();
         let mut high_pieces = SparseSet::new();
-        for pieces in
+        for piece in
             colliding.filter(|piece| self.get_draw_layer(*piece).unwrap() == max_draw_layer)
         {
-            if let Some(pile) = self.pile_manager.get_containing_pile(pieces) {
+            if let Some(pile) = self.pile_manager.get_containing_pile(piece) {
                 high_unpiled.insert(pile);
+            } else {
+                high_unpiled.insert(piece);
             }
-            high_pieces.insert(pieces);
+            high_pieces.insert(piece);
         }
 
         // get and return the last piece drawn
@@ -1066,7 +1107,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             Err(_) => return false,
         };
 
-        !self.pile_manager.is_pile(entity) 
+        !self.pile_manager.is_pile(entity)
     }
 
     /// checks if an item is on a pile
@@ -1095,16 +1136,36 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             Err(_) => return false,
         };
 
-        self.pile_manager.is_pile(entity) 
+        self.pile_manager.is_pile(entity)
     }
 
-    /// checks if an item is grabbed
+    /// returns the item that a player is holding
+    pub fn get_held_item(&self, player: PlayerColor) -> Option<PieceEntity> {
+        self.player_manager.get_held_item(player)
+    }
+
+    /// gets the player holding the given piece
+    pub fn get_holder(&self, entity: EntityIdentifier<PieceEntity>) -> Option<PlayerColor> {
+        let entity = match self.validate_entity(entity) {
+            Ok(e) => e,
+            Err(_) => return None,
+        };
+
+        self.player_manager.get_holder(entity)
+    }
+
+    /// checks if an item is held
     pub fn is_held(&self, entity: EntityIdentifier<PieceEntity>) -> bool {
         let entity = match self.validate_entity(entity) {
             Ok(e) => e,
             Err(_) => return false,
         };
         self.is_entity_held(entity)
+    }
+
+    /// checks if a player is holding an item
+    pub fn is_holding(&self, player: PlayerColor) -> bool {
+        self.player_manager.is_holding(player)
     }
 
     /// checks if an item is grabbed
@@ -1114,7 +1175,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
         } else {
             entity
         };
-        self.player_manager.is_grabbed(entity)
+        self.player_manager.is_held(entity)
     }
 
     /// checks if an item is hidden
@@ -1161,7 +1222,8 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
     }
 
     /// gets the global transform of the given entity
-    fn get_global_transform(&self, entity: PieceEntity) -> RigidTransform<V> {
+    /// does not check if the entity is valid
+    fn get_entity_global_transform(&self, entity: PieceEntity) -> RigidTransform<V> {
         self.get_parent_transform(entity)
             .apply_to_other(self.entity_transforms.get(entity).unwrap())
     }
@@ -1172,14 +1234,14 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
     pub fn set_held_item(
         &mut self,
         player: PlayerColor,
-        entity: Option<PieceEntity>,
+        entity: Option<EntityIdentifier<PieceEntity>>,
     ) -> Result<(), String> {
         self.validate_player(player)?;
 
         // grab the item
         let _ = self.drop_held_item(player);
         if let Some(entity) = entity {
-            self.validate_entity(EntityIdentifier::Entity(entity))?;
+            let entity = self.validate_entity(entity)?;
 
             if self.pile_manager.is_pile(entity) {
                 self.grab_pile(player, entity);
@@ -1201,11 +1263,11 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
     ///  - the pile is valid
     ///  - the player is not holding anything
     fn grab_pile(&mut self, player: PlayerColor, pile: PieceEntity) {
-        if let Some(other_player) = self.player_manager.get_grabber(pile) {
+        if let Some(other_player) = self.player_manager.get_holder(pile) {
             // remove existing control of the pile
-            self.player_manager.set_grab_target(other_player, None);
+            self.player_manager.set_held_item(other_player, None);
         } else {
-            // if pile is not yet grabbed, make sure to grab the pieces
+            // if pile is not yet held, make sure to grab the pieces
             let mut piece_set = DenseSet::new();
             for piece in self.pile_manager.get_pieces_on_pile(pile) {
                 self.quadtree.remove(piece);
@@ -1215,7 +1277,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
         }
 
         // now grab the pile
-        self.player_manager.set_grab_target(player, Some(pile));
+        self.player_manager.set_held_item(player, Some(pile));
     }
 
     /// makes the player grab a pile
@@ -1224,22 +1286,25 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
     ///  - the piece is valid
     ///  - the player is not holding anything
     fn grab_piece(&mut self, player: PlayerColor, piece: PieceEntity) {
-        let is_grabbed = self.is_entity_held(piece);
+        let is_held = self.is_entity_held(piece);
 
         // remove piece from its pile, if its a part of one
-        self.pile_manager.unpile(piece);
+        // return piece to draw order as putting a piece on a pile removes
+        // it from the draw order
+        if let Some(pile) = self.pile_manager.unpile(piece) {
+            let pile_idx = self
+                .entity_draw_order
+                .iter()
+                .position(|p| *p == pile)
+                .unwrap();
+            self.entity_draw_order.insert(pile_idx + 1, piece);
+        }
 
         // update the piece to a grabbed state
-        if !is_grabbed {
+        if !is_held {
             self.quadtree.remove(piece);
-            self.entity_draw_order.remove(
-                self.entity_draw_order
-                    .iter()
-                    .position(|p| *p == piece)
-                    .unwrap(),
-            );
         }
-        self.player_manager.set_grab_target(player, Some(piece));
+        self.player_manager.set_held_item(player, Some(piece));
     }
 
     /// makes the player drop is held piece or pile
@@ -1247,8 +1312,8 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
     pub fn drop_held_item(&mut self, player: PlayerColor) -> Result<(), String> {
         self.validate_player(player)?;
 
-        if let Some(entity) = self.player_manager.get_grab_target(player) {
-            self.player_manager.set_grab_target(player, None);
+        if let Some(entity) = self.player_manager.get_held_item(player) {
+            self.player_manager.set_held_item(player, None);
 
             // re-enable collisions by performing an operation that updates the quadtree
             self.set_transform_unchecked(entity, *self.entity_transforms.get(entity).unwrap());
@@ -1274,12 +1339,12 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
         // clamp position to board boundaries
         let position = self.quadtree.rect().fit_point(position);
 
-        if let Some(piece) = self.player_manager.get_grab_target(player) {
-            // update grabbed piece position
+        if let Some(piece) = self.player_manager.get_held_item(player) {
+            // update held piece position
             // use updated position to set player position (preserves clamping rules)
             let _ = self.set_position(EntityIdentifier::Entity(piece), position);
             self.player_manager
-                .set_position(player, self.get_global_transform(piece).offset);
+                .set_position(player, self.get_entity_global_transform(piece).offset);
         } else {
             // update player position
             self.player_manager.set_position(player, position);
@@ -1367,8 +1432,7 @@ impl<
             } else {
                 let next_entity = self.layered_entity_iter.next()?;
                 if self.board.pile_manager.is_pile(next_entity) {
-                    self.pile_iter =
-                        Some(self.board.pile_manager.get_pieces_on_pile(next_entity));
+                    self.pile_iter = Some(self.board.pile_manager.get_pieces_on_pile(next_entity));
                     continue;
                 }
 

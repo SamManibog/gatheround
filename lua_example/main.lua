@@ -1,3 +1,25 @@
+create_texture("chess_board", {
+    type = "pattern",
+    pattern = "checkers",
+    rect = {
+        x = -500,
+        y = -500,
+        width = 1000,
+        height = 1000
+    },
+    pattern_color = {
+        r = 170,
+        g = 120,
+        b = 90,
+    },
+    weight = 100,
+    background_color = {
+        r = 240,
+        g = 235,
+        b = 230,
+    },
+})
+
 create_texture("red_square", {
     type = "pattern",
     pattern = "solid",
@@ -120,3 +142,10 @@ create_piece({
         },
     },
 })
+
+local board = create_piece({
+    name = "board",
+    texture = "chess_board",
+    draw_layer = -400,
+})
+center_item(board)

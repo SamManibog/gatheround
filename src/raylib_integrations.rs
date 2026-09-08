@@ -1,7 +1,6 @@
 use std::{
     cell::RefCell,
     collections::{BTreeMap, VecDeque},
-    ops::Mul,
     path::Path,
     rc::Rc,
 };
@@ -24,11 +23,11 @@ use crate::{
     ecs::EntityTrait,
     geometry::{ConvexHull, IConvexShape, IRect, IVec2},
     intermediate_representations::{
-        Alignment, EntityIdentifier, ImageTransform, PatternInfo, PatternType, TextboxInfo,
-        VisualComponent, VisualInfo,
+        Alignment, ImageTransform, PatternInfo, PatternType, TextboxInfo, VisualComponent,
+        VisualInfo,
     },
     lua::get_game_lua_instance,
-    renderer::{GlobalAssets, IRenderer},
+    renderer::{GlobalAssets, IRenderer, ITextureCompiler},
     resources::{PlayerColor, TextureInfo, VisualComponentProvider},
 };
 
@@ -109,12 +108,12 @@ impl IColor for Color {
     }
 }
 
-pub struct RaylibRenderer<'a> {
+pub struct RaylibTextureCompiler<'a> {
     pub rl: &'a mut RaylibHandle,
     pub thread: &'a RaylibThread,
 }
 
-impl<'a> RaylibRenderer<'a> {
+impl<'a> RaylibTextureCompiler<'a> {
     /// padding for compiled textures
     const TEXTURE_PADDING: f32 = 2.0;
 
@@ -129,16 +128,6 @@ impl<'a> RaylibRenderer<'a> {
 
     /// minimum line spacing for automatic line spacing
     const MIN_AUTO_LINE_SPACING: f32 = 1.05;
-
-    /// thickness for debug polygon lines
-    const DEBUG_THICKNESS: f32 = 1.0;
-
-    /// thickness for debug polygon line outlines
-    const DEBUG_OUTLINE_THICKNESS: f32 = 3.0;
-
-    pub fn from_handle(rl: &'a mut RaylibHandle, thread: &'a RaylibThread) -> Self {
-        Self { rl, thread }
-    }
 
     fn get_fitting_text_size(font: &Font, text: &str, max_line_length: f32) -> f32 {
         let base_size = 32.0;
@@ -633,13 +622,12 @@ impl<'a> RaylibRenderer<'a> {
     }
 }
 
-impl<'a> IRenderer for RaylibRenderer<'a> {
+impl<'a> ITextureCompiler for RaylibTextureCompiler<'a> {
     type Texture = RenderTexture2D;
     type Font = Font;
     type Color = Color;
     type Rectangle = Rectangle;
     type Vector2 = Vector2;
-    type ConvexShape = ConvexHull<Vector2>;
 
     fn compile_visual(
         &mut self,
@@ -850,6 +838,29 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
             Err(msg) => Err(format!("Failed to load texture from memory: {msg}")),
         }
     }
+}
+
+pub struct RaylibRenderer<'a> {
+    pub rl: &'a mut RaylibHandle,
+    pub thread: &'a RaylibThread,
+    pub draw_layer_pool: &'a mut Vec<RenderTexture2D>,
+}
+
+impl<'a> RaylibRenderer<'a> {
+    /// thickness for debug polygon lines
+    const DEBUG_THICKNESS: f32 = 1.0;
+
+    /// thickness for debug polygon line outlines
+    const DEBUG_OUTLINE_THICKNESS: f32 = 3.0;
+}
+
+impl<'a> IRenderer for RaylibRenderer<'a> {
+    type Texture = RenderTexture2D;
+    type Font = Font;
+    type Color = Color;
+    type Rectangle = Rectangle;
+    type Vector2 = Vector2;
+    type ConvexShape = ConvexHull<Vector2>;
 
     fn draw_board(
         &mut self,
@@ -861,36 +872,37 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
             Self::Font,
         >,
         assets: &GlobalAssets<Self::Texture>,
-    ) -> RenderTexture2D {
+        output_texture: &mut Self::Texture,
+    ) {
         let output_dimensions = board.dimensions();
-        let mut output_texture = self
-            .rl
-            .load_render_texture(
-                self.thread,
-                output_dimensions.x() as u32,
-                output_dimensions.y() as u32,
-            )
-            .unwrap();
+        for _ in 0..board
+            .draw_layer_count()
+            .saturating_sub(self.draw_layer_pool.len())
+        {
+            self.draw_layer_pool.push(
+                self.rl
+                    .load_render_texture(
+                        self.thread,
+                        output_dimensions.x() as u32,
+                        output_dimensions.y() as u32,
+                    )
+                    .unwrap(),
+            );
+        }
 
-        let mut collision_layers = BTreeMap::new();
-        let mut collision_layer_number = 0.0;
-
+        let mut pool_iter = self.draw_layer_pool.iter_mut();
         let mut draw_layers = BTreeMap::from_iter(board.draw_layer_iter().map(|l| {
-            let mut layer = self
-                .rl
-                .load_render_texture(
-                    self.thread,
-                    output_dimensions.x() as u32,
-                    output_dimensions.y() as u32,
-                )
-                .unwrap();
-
+            let mut layer = pool_iter.next().unwrap();
             self.rl
                 .draw_texture_mode(self.thread, &mut layer, |mut painter| {
                     painter.clear_background(Color::BLANK)
                 });
             (l, layer)
         }));
+
+        // collision layers for debug collision layer drawing
+        let mut collision_layers = BTreeMap::new();
+        let mut collision_layer_number = 0.0;
 
         for (texture, collider_opt, transform, layer) in board.texture_draw_iter() {
             let render_texture = draw_layers.get_mut(&layer).unwrap();
@@ -954,7 +966,7 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
         }
 
         self.rl
-            .draw_texture_mode(self.thread, &mut output_texture, |mut painter| {
+            .draw_texture_mode(self.thread, output_texture, |mut painter| {
                 painter.clear_background(Color::BLANK);
 
                 // draw regular layers
@@ -974,7 +986,7 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
                 }
 
                 // draw grabbed elements (again)
-                for (texture, collider_opt, transform) in board.grab_target_draw_iter() {
+                for (texture, collider_opt, transform) in board.held_item_draw_iter() {
                     let src_rect = Rectangle {
                         x: 0.0,
                         y: 0.0,
@@ -1061,8 +1073,6 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
                     );
                 }
             });
-
-        output_texture
     }
 }
 
@@ -1370,11 +1380,10 @@ impl TextCommandBuffer {
 
 /// runs a game editor from the given project path
 pub fn run_game(project_path: &Path) {
-    let padding = Vector2::from_xy(20.0, 20.0);
     let test_player = PlayerColor::Lime;
 
     // initialize game resources
-    let board_dimensions = Vector2::from_xy(1000.0, 1000.0);
+    let board_dimensions = Vector2::from_xy(1920.0, 1080.0);
     let mut board =
         BoardManager::<Rectangle, Vector2, ConvexHull<Vector2>, RenderTexture2D, Font>::new(
             board_dimensions,
@@ -1390,17 +1399,27 @@ pub fn run_game(project_path: &Path) {
         _ => (),
     })
     .expect("unable to set trace log level");
+    let mut draw_layer_pool = Vec::new();
     let (mut rl, thread) = raylib::init()
+        .vsync()
+        .title("Gatheround Board Game Engine")
+        //.fullscreen()
+        .size(board_dimensions.x() as i32, board_dimensions.y() as i32)
         .resizable()
-        .title("Gatheround Game Editor")
-        .size(
-            (board_dimensions.x() + padding.x() * 2.0) as i32,
-            (board_dimensions.y() + padding.y() * 2.0) as i32,
-        )
         .build();
     rl.set_exit_key(None);
     rl.set_target_fps(FRAME_RATE);
-    let global_assets = GlobalAssets::new(&mut RaylibRenderer::from_handle(&mut rl, &thread));
+    let mut output_texture = rl
+        .load_render_texture(
+            &thread,
+            board_cell.borrow().dimensions().x() as u32,
+            board_cell.borrow().dimensions().y() as u32,
+        )
+        .expect("Unable to create board render layer");
+    let global_assets = GlobalAssets::new(&mut RaylibTextureCompiler {
+        rl: &mut rl,
+        thread: &thread,
+    });
 
     let mut command_buffer = TextCommandBuffer::new(&mut rl, &thread);
     let rl_cell = Rc::new(RefCell::new(rl));
@@ -1415,6 +1434,16 @@ pub fn run_game(project_path: &Path) {
         if rl_cell.borrow_mut().window_should_close() {
             return;
         }
+
+        let padding = {
+            let rl = rl_cell.borrow();
+            let board = board_cell.borrow();
+            Vector2::from_xy(
+                rl.get_render_width() as f32 - board.dimensions().x(),
+                rl.get_render_height() as f32 - board.dimensions().y(),
+            )
+            .scaled(0.5)
+        };
 
         // update hand position
         // randomize hand update order for "fair" movement
@@ -1443,7 +1472,7 @@ pub fn run_game(project_path: &Path) {
                 drop(rl);
 
                 let board = board_cell.borrow_mut();
-                if let Some(piece) = board.grabbed_item(test_player) {
+                if let Some(piece) = board.get_held_item(test_player) {
                     drop(board);
 
                     let drop_attempted_fn: mlua::Function = lua
@@ -1472,6 +1501,8 @@ pub fn run_game(project_path: &Path) {
         {
             let mut rl = rl_cell.borrow_mut();
             if let Some(cmd) = command_buffer.update(&mut rl) {
+                drop(rl);
+
                 match lua.load(cmd).eval::<mlua::MultiValue>() {
                     Ok(v) => println!("GOTVALUE FROM COMMAND!: {:?}", v),
                     Err(e) => {
@@ -1485,9 +1516,12 @@ pub fn run_game(project_path: &Path) {
         {
             let mut rl = rl_cell.borrow_mut();
             let thread = thread_cell.borrow();
-            let mut rl_renderer = RaylibRenderer::from_handle(&mut rl, &thread);
-
-            let board_texture = rl_renderer.draw_board(&board_cell.borrow(), &global_assets);
+            let mut rl_renderer = RaylibRenderer {
+                rl: &mut rl,
+                thread: &thread,
+                draw_layer_pool: &mut draw_layer_pool,
+            };
+            rl_renderer.draw_board(&board_cell.borrow(), &global_assets, &mut output_texture);
 
             rl.draw(&thread, |mut painter| {
                 painter.clear_background(Color::RAYWHITE);
@@ -1496,7 +1530,7 @@ pub fn run_game(project_path: &Path) {
                     Rectangle::from_position_dimension((0.0, 0.0), board_dimensions.neg_y());
                 let dst_rect = Rectangle::from_position_dimension(padding, board_dimensions);
                 painter.draw_texture_pro(
-                    &board_texture,
+                    &output_texture,
                     src_rect,
                     dst_rect,
                     Vector2::from_xy(0.0, 0.0),
