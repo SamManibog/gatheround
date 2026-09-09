@@ -128,9 +128,19 @@ impl<V: IVec2> PileManager<V> {
         self.piece_pile_map.get(piece).cloned()
     }
 
+    /// gets snap info for the given pile (offset, radius)
+    pub fn get_snap_info(&self, pile: PieceEntity) -> Option<(V, f32)> {
+        self.piles.get(pile).map(|s| (s.snap_offset, s.snap_radius))
+    }
+
     /// gets the snap offset of the pile
     pub fn get_snap_offset(&self, pile: PieceEntity) -> Option<V> {
         self.piles.get(pile).map(|s| s.snap_offset)
+    }
+
+    /// gets the snap radius of the pile
+    pub fn get_snap_radius(&self, pile: PieceEntity) -> Option<f32> {
+        self.piles.get(pile).map(|s| s.snap_radius)
     }
 
     /// gets the pieces on the given pile
@@ -524,10 +534,10 @@ pub struct QuadTreeManager<R: IRect> {
 }
 
 impl<R: IRect> QuadTreeManager<R> {
-    pub fn new<V: IVec2>(dimensions: V) -> Self {
+    pub fn new(rect: R) -> Self {
         Self {
             aabbs: Default::default(),
-            quadtree: QuadTree::new(R::from_position_dimension((0.0, 0.0), dimensions)),
+            quadtree: QuadTree::new(rect,)
         }
     }
 
@@ -699,6 +709,21 @@ impl EntityTrait for PlayerColor {
             10 => Self::White,
             11 => Self::Brown,
             _ => panic!("PlayerColor cannot be construccted from ids over 11."),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct SnapTargetManager {
+    player_to_pile: DenseComponentManager<PlayerColor, PieceEntity>,
+    pile_to_layer: DenseComponentManager<PieceEntity, PlayerColor>,
+}
+
+impl Default for SnapTargetManager {
+    fn default() -> Self {
+        Self {
+            player_to_pile: Default::default(),
+            pile_to_layer: Default::default(),
         }
     }
 }

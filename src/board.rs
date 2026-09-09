@@ -64,7 +64,7 @@ pub struct BoardManager<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F
     /// pieces who should have their collision shapes drawn
     /// RULES:
     ///  - NO PILES may be contained
-    debug_pieces: DenseSet<PieceEntity>,
+    debug_entities: DenseSet<PieceEntity>,
 
     /// entities who should be hidden
     hidden_entities: DenseSet<PieceEntity>,
@@ -77,19 +77,17 @@ pub struct BoardManager<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F
     ///  - NO PILED PIECES may be stored here
     entity_draw_order: VecDeque<PieceEntity>,
 
-    /// the transforms of each piece
+    /// the transforms of each entity
     /// piles and un-piled pieces use absolute transforms
     /// piled pieces have transforms relative to their parent pile
     /// RULES:
     ///  - ALL ENTITIES must have a transform
-    ///  - Transforms may not place an entity's center or colliders outside of quadtree bounds
     entity_transforms: DenseComponentManager<PieceEntity, RigidTransform<V>>,
 
     /// the colliders for each piece
     /// we must ensure that each piece collider vector is non-emtpy
     /// RULES:
     ///  - NO PILES may have colliders
-    ///  - Transformed colliders may NOT exist outside of quadtree bounds
     piece_colliders: DenseComponentManager<PieceEntity, Vec<PieceCollider>>,
 
     /// quadtree manager that tracks piece aabb collisions
@@ -97,11 +95,29 @@ pub struct BoardManager<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F
     /// RULES:
     ///  - NO PILES may be contained
     ///  - HELD ENTITIES may NOT be contained
+    ///  - HELD ITEMS may NOT be contained
     quadtree: QuadTreeManager<R>,
+
+    /// quadtree that tracks snap positions
+    /// RULES
+    ///  - ONLY PILES may be contianed
+    ///  - HELD PILES may NOT be contained
+    snap_quadtree: QuadTreeManager<R>,
+
+    /// dimensions of the visible area
+    visible_rect: R,
 }
 
 impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V, S, T, F> {
+    /// the dimensions of quadtrees relative to actual dimensions
+    const QUADTREE_SIZE_RATIO: f32 = 2.0;
+
     pub fn new(dimensions: V) -> Self {
+        let visible_rect = R::from_position_dimension((0.0, 0.0), dimensions);
+        let quadtree_rect = R::from_center_dimension(
+            visible_rect.center::<V>(),
+            dimensions.scaled(Self::QUADTREE_SIZE_RATIO),
+        );
         Self {
             texture_manager: Default::default(),
             player_manager: Default::default(),
@@ -110,7 +126,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             entity_draw_layers: Default::default(),
             category_manager: Default::default(),
             piece_entity_manager: Default::default(),
-            debug_pieces: Default::default(),
+            debug_entities: Default::default(),
             hidden_entities: Default::default(),
             no_collision_entities: Default::default(),
             pile_manager: Default::default(),
@@ -118,7 +134,9 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             entity_draw_order: Default::default(),
             entity_transforms: Default::default(),
             piece_colliders: Default::default(),
-            quadtree: QuadTreeManager::new(dimensions),
+            quadtree: QuadTreeManager::new(quadtree_rect),
+            snap_quadtree: QuadTreeManager::new(quadtree_rect),
+            visible_rect,
         }
     }
 
@@ -331,10 +349,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
     }
 
     /// centers the item on the board
-    pub fn center_item(
-        &mut self,
-        entity: EntityIdentifier<PieceEntity>,
-    ) -> Result<(), String> {
+    pub fn center_item(&mut self, entity: EntityIdentifier<PieceEntity>) -> Result<(), String> {
         let entity = self.validate_entity(entity)?;
         self.center_entity_unchekced(entity);
         Ok(())
@@ -378,120 +393,52 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
     }
 
     /// sets the transform of a pile without checking whether the pile is valid
-    /// the pile and the contained pieces must have their origin in the board
-    /// colliders must also fit entirely in the board
     fn set_pile_transform_unchecked(&mut self, pile: PieceEntity, transform: RigidTransform<V>) {
-        // used to move pieces after moving pile
-        let mut piece_aabbs = DenseComponentManager::new();
-
-        // compute initial aabb
-        let initial_aabb = {
-            let mut rect = R::empty(transform.offset);
-
-            for piece in self.pile_manager.get_pieces_on_pile(pile) {
-                let piece_transform =
-                    transform.apply_to_other(self.entity_transforms.get(piece).unwrap());
-                let collider_opt = self.piece_colliders.get(piece);
-                let piece_aabb = if let Some(colliders) = collider_opt {
-                    let aabb = geometry::compute_advanced_aabb::<R, V, S>(
-                        &piece_transform,
-                        colliders
-                            .iter()
-                            .map(|c| self.collision_shape_manager.get(c.shape).unwrap()),
-                    )
-                    .unwrap()
-                    .bounding(&R::empty(piece_transform.offset));
-                    piece_aabbs.insert(piece, aabb);
-                    aabb
-                } else {
-                    R::empty(piece_transform.offset)
-                };
-
-                rect = rect.bounding(&piece_aabb);
-            }
-
-            rect
-        };
-
-        // determine final transform
-        let final_aabb: R = self.quadtree.rect().fit(initial_aabb);
-        let delta = final_aabb.min::<V>().sub(initial_aabb.min::<V>());
-        let transform = RigidTransform {
-            offset: transform.offset.add(delta),
-            angle: transform.angle,
-        };
-
+        // move pile
         self.entity_transforms.insert(pile, transform);
+
+        // move pile aabb
+        let (offset, radius) = self.pile_manager.get_snap_info(pile).unwrap();
+        if radius > 0.0 {
+            self.snap_quadtree.set_aabb(
+                pile,
+                R::from_center_dimension(
+                    transform.offset.add(offset),
+                    (radius * 2.0, radius * 2.0),
+                ),
+            );
+        }
 
         // move piece aabbs
         if !self.is_entity_held(pile) {
-            for (piece, aabb) in piece_aabbs.pairs_iter() {
-                self.quadtree.set_aabb(piece, aabb.offset(delta));
+            for piece in self.pile_manager.get_pieces_on_pile(pile) {
+                if let Some(colliders) = self.piece_colliders.get(piece) {
+                    let p_transform = self.get_entity_global_transform(piece);
+                    let shape_iter = colliders
+                        .iter()
+                        .map(|s| self.get_collision_shape(s.shape).unwrap());
+                    let aabb = geometry::compute_advanced_aabb(&p_transform, shape_iter).unwrap();
+
+                    self.quadtree.set_aabb(piece, aabb);
+                }
             }
         }
     }
 
     /// sets the transform of a piece without checking whether the piece is valid
-    /// must ensure that
-    /// - the piece's origin is fully contained in our board
-    /// - if the piece has colliders, they are fully contained in our board
     fn set_piece_transform_unchecked(&mut self, piece: PieceEntity, transform: RigidTransform<V>) {
-        let parent_transform = self.get_parent_transform(piece);
+        // move piece
+        self.entity_transforms.insert(piece, transform);
 
+        // move aabb
         if let Some(colliders) = self.piece_colliders.get(piece) {
-            // if this piece has colliders...
-            // ensure they are fully contained by the board
+            let p_transform = self.get_entity_global_transform(piece);
+            let shape_iter = colliders
+                .iter()
+                .map(|s| self.get_collision_shape(s.shape).unwrap());
+            let aabb = geometry::compute_advanced_aabb(&p_transform, shape_iter).unwrap();
 
-            // compute the global aabb
-            let global_transform = parent_transform.apply_to_other(&transform);
-            let initial_aabb = geometry::compute_advanced_aabb::<R, V, S>(
-                &global_transform,
-                colliders
-                    .iter()
-                    .map(|c| self.collision_shape_manager.get(c.shape).unwrap()),
-            )
-            .unwrap()
-            .bounding(&R::empty(global_transform.offset));
-
-            // the board-fitted global aabb
-            let final_aabb: R = self.quadtree.rect().fit(initial_aabb);
-
-            let global_delta = final_aabb.min::<V>().sub(initial_aabb.min::<V>());
-            let relative_delta = parent_transform.apply_inv_to_point(global_delta);
-
-            let transform = RigidTransform {
-                offset: transform.offset.add(relative_delta),
-                angle: transform.angle,
-            };
-
-            self.entity_transforms.insert(piece, transform);
-
-            // update quadtree only if player is not held
-            // (setting aabb may insert it)
-            if !self.is_entity_held(piece) {
-                self.quadtree.set_aabb(piece, final_aabb);
-            }
-        } else {
-            // clamp transform so that its offset fits in the board
-            let initial_global_transform = parent_transform.apply_to_other(&transform);
-            let final_global_transform = RigidTransform {
-                offset: self
-                    .quadtree
-                    .rect()
-                    .fit_point(initial_global_transform.offset),
-                angle: transform.angle,
-            };
-            let global_delta = final_global_transform
-                .offset
-                .sub(initial_global_transform.offset);
-            let relative_delta = parent_transform.apply_inv_to_point(global_delta);
-
-            let transform = RigidTransform {
-                offset: transform.offset.add(relative_delta),
-                angle: transform.angle,
-            };
-
-            self.entity_transforms.insert(piece, transform);
+            self.quadtree.set_aabb(piece, aabb);
         }
     }
 
@@ -696,7 +643,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
                     .texture;
                 let transform = self.entity_transforms.get(piece).unwrap();
                 let draw_layer = self.entity_draw_layers.get(piece).unwrap();
-                let colliders = if self.debug_pieces.contains(piece) {
+                let colliders = if self.debug_entities.contains(piece) {
                     self.piece_colliders.get(piece).map(|l| l.as_slice())
                 } else {
                     None
@@ -732,7 +679,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
                     .unwrap()
                     .texture;
                 let transform = self.entity_transforms.get(piece).unwrap();
-                let colliders = if self.debug_pieces.contains(piece) {
+                let colliders = if self.debug_entities.contains(piece) {
                     self.piece_colliders.get(piece).map(|l| l.as_slice())
                 } else {
                     None
@@ -761,7 +708,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
 
     /// gets the dimensions of the board
     pub fn dimensions(&self) -> V {
-        self.quadtree.rect().dimensions()
+        self.visible_rect.dimensions()
     }
 
     /// attempts to create a new texture, returning its entity on success
@@ -794,6 +741,10 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
     }
 
     pub fn remove_player(&mut self, color: PlayerColor) {
+        if self.player_manager.is_playing(color) {
+            self.drop_held_item(color)
+                .expect("just confirmed player is valid");
+        }
         self.player_manager.remove_player(color);
     }
 
@@ -1089,14 +1040,14 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
     /// makes a piece show its collision shapes
     pub fn show_debug(&mut self, piece: EntityIdentifier<PieceEntity>) -> Result<(), String> {
         let piece = self.validate_piece(piece)?;
-        self.debug_pieces.insert(piece);
+        self.debug_entities.insert(piece);
         Ok(())
     }
 
     /// makes a piece hide its collision shapes
     pub fn hide_debug(&mut self, piece: EntityIdentifier<PieceEntity>) -> Result<(), String> {
         let piece = self.validate_piece(piece)?;
-        self.debug_pieces.remove(piece);
+        self.debug_entities.remove(piece);
         Ok(())
     }
 
@@ -1337,17 +1288,15 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
         self.validate_player(player)?;
 
         // clamp position to board boundaries
-        let position = self.quadtree.rect().fit_point(position);
+        let position = self.visible_rect.fit_point(position);
 
-        if let Some(piece) = self.player_manager.get_held_item(player) {
-            // update held piece position
-            // use updated position to set player position (preserves clamping rules)
-            let _ = self.set_position(EntityIdentifier::Entity(piece), position);
-            self.player_manager
-                .set_position(player, self.get_entity_global_transform(piece).offset);
-        } else {
-            // update player position
-            self.player_manager.set_position(player, position);
+        // update player position
+        self.player_manager.set_position(player, position);
+
+        // move held item
+        if let Some(entity) = self.player_manager.get_held_item(player) {
+            self.set_position(EntityIdentifier::Entity(entity), position)
+                .unwrap();
         }
 
         Ok(())
