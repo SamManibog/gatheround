@@ -14,10 +14,15 @@ use raylib::{
 
 use crate::{
     board::BoardManager,
+    color::{IColor, color_from_lua_value},
     ecs::EntityTrait,
-    geometry::{ConvexHull, IConvexShape, IRect, IVec2, RigidTransform, vec2_from_lua_table, vec2_from_lua_value},
+    geometry::{
+        ConvexHull, IConvexShape, IRect, IVec2, RigidTransform, vec2_from_lua_table,
+        vec2_from_lua_value,
+    },
     intermediate_representations::{EntityIdentifier, PieceIR, PileIR, VisualInfo},
-    raylib_integrations::RaylibTextureCompiler, resources::PlayerColor,
+    raylib_integrations::RaylibTextureCompiler,
+    resources::PlayerColor,
 };
 
 const MAIN_LUA_FILE: &str = "main.lua";
@@ -95,10 +100,10 @@ fn get_lua_instance() -> Lua {
 }
 
 #[inline]
-fn create_game_api_function<F1, F2, A, B, R, V, S, T, F>(
+fn create_game_api_function<F1, F2, A, B, C, R, V, S, T, F>(
     lua: &Lua,
     project_path: &Path,
-    board: &Rc<RefCell<BoardManager<R, V, S, T, F>>>,
+    board: &Rc<RefCell<BoardManager<C, R, V, S, T, F>>>,
     rl: &Rc<RefCell<RaylibHandle>>,
     thread: &Rc<RefCell<RaylibThread>>,
     name: &str,
@@ -106,13 +111,14 @@ fn create_game_api_function<F1, F2, A, B, R, V, S, T, F>(
 ) where
     F1: Fn(
         PathBuf,
-        Rc<RefCell<BoardManager<R, V, S, T, F>>>,
+        Rc<RefCell<BoardManager<C, R, V, S, T, F>>>,
         Rc<RefCell<RaylibHandle>>,
         Rc<RefCell<RaylibThread>>,
     ) -> F2,
     F2: Fn(&Lua, A) -> mlua::Result<B> + mlua::MaybeSend + 'static,
     A: mlua::FromLuaMulti,
     B: mlua::IntoLuaMulti,
+    C: IColor,
     R: IRect,
     V: IVec2,
     S: IConvexShape + FromLuaTable,
@@ -149,7 +155,16 @@ macro_rules! define_game_api {
 pub fn get_game_lua_instance(
     project_path: &Path,
     board_cell: &Rc<
-        RefCell<BoardManager<Rectangle, Vector2, ConvexHull<Vector2>, RenderTexture2D, Font>>,
+        RefCell<
+            BoardManager<
+                raylib::ffi::Color,
+                Rectangle,
+                Vector2,
+                ConvexHull<Vector2>,
+                RenderTexture2D,
+                Font,
+            >,
+        >,
     >,
     rl_cell: &Rc<RefCell<RaylibHandle>>,
     thread_cell: &Rc<RefCell<RaylibThread>>,
@@ -283,6 +298,34 @@ pub fn get_game_lua_instance(
     );
 
     define_game_api!(
+        "get_player_position",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, player_val: Value| {
+                // try to parse the entity
+                let player_result = PlayerColor::try_from_lua_value(&player_val);
+                if let Err(msg) = player_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let player = player_result.unwrap();
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.lua_get_player_position(&lua, player) {
+                    Ok(p) => Ok(p),
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
         "set_player_position",
         lua,
         project_path,
@@ -319,26 +362,26 @@ pub fn get_game_lua_instance(
     );
 
     define_game_api!(
-        "get_player_position",
+        "get_transform",
         lua,
         project_path,
         board_cell,
         rl_cell,
         thread_cell,
         {
-            move |lua, player_val: Value| {
+            move |lua, item_val: Value| {
                 // try to parse the entity
-                let player_result = PlayerColor::try_from_lua_value(&player_val);
-                if let Err(msg) = player_result {
+                let item_result = EntityIdentifier::try_from_lua_value(&item_val);
+                if let Err(msg) = item_result {
                     return Err(mlua::Error::RuntimeError(msg));
                 }
-                let player = player_result.unwrap();
+                let item = item_result.unwrap();
 
                 let mut board = board_cell
                     .try_borrow_mut()
                     .expect("board is already borrowed");
 
-                match board.lua_get_player_position(&lua, player) {
+                match board.lua_get_transform(&lua, item) {
                     Ok(p) => Ok(p),
                     Err(msg) => Err(mlua::Error::RuntimeError(msg)),
                 }
@@ -449,6 +492,35 @@ pub fn get_game_lua_instance(
     );
 
     define_game_api!(
+        "get_transform",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, item_val: Value| {
+                // try to parse the entity
+                let item_result = EntityIdentifier::try_from_lua_value(&item_val);
+                if let Err(msg) = item_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let item = item_result.unwrap();
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.lua_get_transform(&lua, item) {
+                    Ok(transform) => Ok(transform),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
         "center_item",
         lua,
         project_path,
@@ -476,7 +548,6 @@ pub fn get_game_lua_instance(
             }
         }
     );
-
 
     define_game_api!(
         "get_texture",
@@ -1025,7 +1096,6 @@ pub fn get_game_lua_instance(
         }
     );
 
-
     define_game_api!(
         "get_pieces_on_point",
         lua,
@@ -1119,6 +1189,212 @@ pub fn get_game_lua_instance(
         }
     );
 
+    define_game_api!(
+        "add_tags",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, (item_val, tag_table): (Value, Table)| {
+                // try to parse the piece
+                let item_result = EntityIdentifier::try_from_lua_value(&item_val);
+                if let Err(msg) = item_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let item = item_result.unwrap();
+
+                let mut tags = Vec::new();
+                for tag_result in tag_table.sequence_values::<Value>() {
+                    match String::try_from_lua_value(&tag_result?) {
+                        Ok(tag) => tags.push(tag),
+                        Err(msg) => return Err(mlua::Error::RuntimeError(msg)),
+                    }
+                }
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.add_tags(item, tags.iter()) {
+                    Ok(t) => Ok(t),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
+        "remove_tags",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, (item_val, tag_table): (Value, Table)| {
+                // try to parse the piece
+                let item_result = EntityIdentifier::try_from_lua_value(&item_val);
+                if let Err(msg) = item_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let item = item_result.unwrap();
+
+                let mut tags = Vec::new();
+                for tag_result in tag_table.sequence_values::<Value>() {
+                    match String::try_from_lua_value(&tag_result?) {
+                        Ok(tag) => tags.push(tag),
+                        Err(msg) => return Err(mlua::Error::RuntimeError(msg)),
+                    }
+                }
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.remove_tags(item, tags.iter()) {
+                    Ok(t) => Ok(t),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
+        "set_tags",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, (item_val, tag_table): (Value, Table)| {
+                // try to parse the piece
+                let item_result = EntityIdentifier::try_from_lua_value(&item_val);
+                if let Err(msg) = item_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let item = item_result.unwrap();
+
+                let mut tags = Vec::new();
+                for tag_result in tag_table.sequence_values::<Value>() {
+                    match String::try_from_lua_value(&tag_result?) {
+                        Ok(tag) => tags.push(tag),
+                        Err(msg) => return Err(mlua::Error::RuntimeError(msg)),
+                    }
+                }
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.set_tags(item, tags.iter()) {
+                    Ok(t) => Ok(t),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
+        "clear_tags",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, item_val: Value| {
+                // try to parse the piece
+                let item_result = EntityIdentifier::try_from_lua_value(&item_val);
+                if let Err(msg) = item_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let item = item_result.unwrap();
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.clear_tags(item) {
+                    Ok(t) => Ok(t),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
+        "has_tag",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, (item_val, tag_val): (Value, Value)| {
+                // try to parse the piece
+                let item_result = EntityIdentifier::try_from_lua_value(&item_val);
+                if let Err(msg) = item_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let item = item_result.unwrap();
+
+                // try to parse the tag
+                let tag_result = String::try_from_lua_value(&tag_val);
+                if let Err(msg) = tag_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let tag = tag_result.unwrap();
+
+                let board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.has_tag(item, &tag) {
+                    Ok(b) => Ok(b),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
+        "get_items_with_tag",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, tag_val: Value| {
+                // try to parse the tag
+                let tag_result = String::try_from_lua_value(&tag_val);
+                if let Err(msg) = tag_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let query_tag = tag_result.unwrap();
+
+                let board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                let iter = board.get_items_with_tag(&query_tag);
+                let output_table = lua.create_table()?;
+                for (idx, entity) in iter.enumerate() {
+                    output_table.raw_set(idx + 1, entity.id())?;
+                }
+
+                Ok(output_table)
+            }
+        }
+    );
 
     define_game_api!(
         "delete",
@@ -1145,6 +1421,31 @@ pub fn get_game_lua_instance(
 
                     Err(msg) => Err(mlua::Error::RuntimeError(msg)),
                 }
+            }
+        }
+    );
+
+    define_game_api!(
+        "set_background",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, color_val: Value| {
+                let color_result = color_from_lua_value::<raylib::ffi::Color>(&color_val);
+                if let Err(msg) = color_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let color = color_result.unwrap();
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+                board.color = color;
+
+                Ok(())
             }
         }
     );

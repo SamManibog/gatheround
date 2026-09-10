@@ -1,23 +1,20 @@
+set_background("#E8E3DE")
+
+local board_length = 1000
+local tile_length = board_length / 8
+
 create_texture("chess_board", {
     type = "pattern",
     pattern = "checkers",
     rect = {
-        x = -500,
-        y = -500,
-        width = 1000,
-        height = 1000
+        x = -0.5 * board_length,
+        y = -0.5 * board_length,
+        width = board_length,
+        height = board_length,
     },
-    pattern_color = {
-        r = 170,
-        g = 120,
-        b = 90,
-    },
-    weight = 100,
-    background_color = {
-        r = 240,
-        g = 235,
-        b = 230,
-    },
+    pattern_color = "#ECE7E2",
+    background_color = "#AA785A",
+    weight = tile_length,
 })
 
 create_texture("red_square", {
@@ -52,33 +49,6 @@ create_texture("blue_king", {
             b = 255,
         }
     },
-    --[[{
-        type = "pattern",
-        pattern = "dots",
-        rect = {
-            x = -40,
-            y = -40,
-            width = 80,
-            height = 80
-        },
-        pattern_color = {
-            r = 0,
-            g = 0,
-            b = 255,
-        },
-        background_color = {
-            r = 0,
-            g = 255,
-            b = 255,
-        },
-        offset = {
-            x = 55,
-            y = 0,
-        },
-        weight = 20,
-        spacing = 5,
-        angle = 0,
-    },]]
     {
         type = "textbox",
         rect = {
@@ -150,13 +120,43 @@ local board = create_piece({
 })
 center_item(board)
 
-local test_pile = create_pile({
-    name = "test_pile",
-    snap_radius = 40.0,
-    transform = { x = 300, y = 300, },
-})
-center_item(test_pile)
-show_debug(test_pile)
+local board_transform = get_transform(board)
 
+local top_left_tile = {
+    x = board_transform.x - board_length * 0.5 + tile_length * 0.5,
+    y = board_transform.y - board_length * 0.5 + tile_length * 0.5,
+}
+local tile_snap_radius = tile_length / 2 * 1.414
 
+local rows = "87654321"
+local cols = "abcdefgh"
+
+for r = 1, #rows do
+    for c = 1, #cols do
+        local transform = {
+            x = top_left_tile.x + tile_length * (c - 1),
+            y = top_left_tile.y + tile_length * (r - 1),
+        }
+
+        local color = "black"
+        if (r + c) % 2 == 0 then
+            color = "white"
+        end
+
+        local rank = rows:sub(r, r)
+        local file = cols:sub(c, c)
+
+        create_pile({
+            name = file .. rank,
+            snap_radius = tile_snap_radius,
+            transform = transform,
+            tags = {
+                "rank"..rank,
+                "file"..file,
+                color,
+                "tile"
+            },
+        })
+    end
+end
 

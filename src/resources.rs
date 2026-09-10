@@ -71,8 +71,8 @@ pub struct CollisionLayerEntityMarker;
 pub type CollisionLayerEntity = Entity<CollisionLayerEntityMarker>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PieceCategoryEntityMarker;
-pub type CategoryEntity = Entity<PieceCategoryEntityMarker>;
+pub struct PieceTagEntityMarker;
+pub type TagEntity = Entity<PieceTagEntityMarker>;
 
 #[derive(Debug, Clone)]
 pub struct PieceCollider {
@@ -278,123 +278,151 @@ impl<V: IVec2> PileManager<V> {
     }
 }
 
-pub struct CategoryManager {
-    /// the categories of pieces that may exist
-    /// maps categories to the list of pieces in that category
-    /// we must ensure that all categories are named entities
-    category_collections: ResourceManager<CategoryEntity, DenseSet<PieceEntity>>,
+pub struct TagManager {
+    /// the tags of pieces that may exist
+    /// maps tags to the list of pieces in that tag
+    /// we must ensure that all tags are named entities
+    tag_collections: ResourceManager<TagEntity, DenseSet<PieceEntity>>,
 
-    /// the categories assigned to each piece
-    piece_categories: DenseComponentManager<PieceEntity, DenseSet<CategoryEntity>>,
+    /// the tags assigned to each piece
+    piece_tags: DenseComponentManager<PieceEntity, DenseSet<TagEntity>>,
 }
 
-impl Default for CategoryManager {
+impl Default for TagManager {
     fn default() -> Self {
         Self {
-            category_collections: Default::default(),
-            piece_categories: Default::default(),
+            tag_collections: Default::default(),
+            piece_tags: Default::default(),
         }
     }
 }
 
-impl CategoryManager {
-    /// adds categories to a piece
-    pub fn add_categories(&mut self, piece: PieceEntity, categories: &[String]) {
-        let piece_categories = self.piece_categories.get_mut_or_insert(piece, || DenseSet::new());
+impl TagManager {
+    /// adds tags to a piece
+    pub fn add_tags<'a, 'b: 'a>(
+        &'b mut self,
+        piece: PieceEntity,
+        tags: impl Iterator<Item = &'a String>,
+    ) {
+        let piece_tags = self
+            .piece_tags
+            .get_mut_or_insert(piece, || DenseSet::new());
 
-        for category in categories.iter() {
-            let (category_entity, category_collection) =
-                if let Some(e) = self.category_collections.get_entity(&category) {
-                    (e, self.category_collections.get_mut(e).unwrap())
+        for tag in tags {
+            let (tag_entity, tag_collection) =
+                if let Some(e) = self.tag_collections.get_entity(&tag) {
+                    (e, self.tag_collections.get_mut(e).unwrap())
                 } else {
                     let entity = self
-                        .category_collections
-                        .add_named(category.clone(), DenseSet::new())
+                        .tag_collections
+                        .add_named(tag.clone(), DenseSet::new())
                         .unwrap();
-                    (entity, self.category_collections.get_mut(entity).unwrap())
+                    (entity, self.tag_collections.get_mut(entity).unwrap())
                 };
 
-            piece_categories.insert(category_entity);
-            category_collection.insert(piece);
+            piece_tags.insert(tag_entity);
+            tag_collection.insert(piece);
         }
     }
 
-    /// sets the categories of a piece
-    pub fn set_categories(&mut self, piece: PieceEntity, categories: &[String]) {
-        self.clear_categories(piece);
-        self.add_categories(piece, categories);
+    /// checks if a piece has the given tag
+    pub fn has_tag(&self, piece: PieceEntity, tag: &String) -> bool {
+        let tag_entity = if let Some(e) = self.tag_collections.get_entity(tag) {
+            e
+        } else {
+            return false;
+        };
+
+        let piece_tags = if let Some(c) = self.piece_tags.get(piece) {
+            c
+        } else {
+            return false;
+        };
+
+        piece_tags.contains(tag_entity)
     }
 
-    /// clears all categories from a piece
-    pub fn clear_categories(&mut self, piece: PieceEntity) {
-        let piece_categories = if let Some(val) = self.piece_categories.remove(piece) {
+    /// sets the tags of a piece
+    pub fn set_tags<'a, 'b: 'a>(
+        &'b mut self,
+        piece: PieceEntity,
+        tags: impl Iterator<Item = &'a String>,
+    ) {
+        self.clear_tags(piece);
+        self.add_tags(piece, tags);
+    }
+
+    /// clears all tags from a piece
+    pub fn clear_tags(&mut self, piece: PieceEntity) {
+        let piece_tags = if let Some(val) = self.piece_tags.remove(piece) {
             val
         } else {
             return;
         };
 
-        for category_entity in piece_categories.iter() {
-            let category_collection = self.category_collections.get_mut(category_entity).unwrap();
-            category_collection.remove(piece);
-            if category_collection.is_empty() {
-                self.category_collections.remove(category_entity);
+        for tag_entity in piece_tags.iter() {
+            let tag_collection = self.tag_collections.get_mut(tag_entity).unwrap();
+            tag_collection.remove(piece);
+            if tag_collection.is_empty() {
+                self.tag_collections.remove(tag_entity);
             }
         }
 
-        self.piece_categories.remove(piece);
+        self.piece_tags.remove(piece);
     }
 
-    /// removes specific categories from a piece
-    pub fn remove_categories(&mut self, piece: PieceEntity, categories: &[String]) {
-        let piece_categories = if let Some(val) = self.piece_categories.get_mut(piece) {
+    /// removes specific tags from a piece
+    pub fn remove_tags<'a, 'b: 'a>(
+        &'b mut self,
+        piece: PieceEntity,
+        tags: impl Iterator<Item = &'a String>,
+    ) {
+        let piece_tags = if let Some(val) = self.piece_tags.get_mut(piece) {
             val
         } else {
             return;
         };
 
-        for category in categories.iter() {
-            if let Some(category_entity) = self.category_collections.get_entity(&category) {
-                let category_collection =
-                    self.category_collections.get_mut(category_entity).unwrap();
+        for tag in tags {
+            if let Some(tag_entity) = self.tag_collections.get_entity(&tag) {
+                let tag_collection =
+                    self.tag_collections.get_mut(tag_entity).unwrap();
 
-                piece_categories.remove(category_entity);
-                category_collection.remove(piece);
+                piece_tags.remove(tag_entity);
+                tag_collection.remove(piece);
 
-                if category_collection.is_empty() {
-                    self.category_collections.remove(category_entity);
+                if tag_collection.is_empty() {
+                    self.tag_collections.remove(tag_entity);
                 }
             }
         }
 
-        if piece_categories.is_empty() {
-            self.piece_categories.remove(piece);
+        if piece_tags.is_empty() {
+            self.piece_tags.remove(piece);
         }
     }
 
-    /// returns an iterator over all existing categories
-    pub fn categories(&self) -> impl Iterator<Item = &String> {
-        self.category_collections
+    /// returns an iterator over all existing tags
+    pub fn tags(&self) -> impl Iterator<Item = &String> {
+        self.tag_collections
             .identifier_iter()
             .map(|(_, n)| n.unwrap())
     }
 
-    /// returns an iterator over all categories assigned to a piece
-    pub fn piece_categories(&self, piece: PieceEntity) -> Option<impl Iterator<Item = &String>> {
-        let categories = self.piece_categories.get(piece)?;
-        Some(
-            categories
-                .iter()
-                .map(|e| self.category_collections.get_name(e).unwrap()),
-        )
+    /// returns an iterator over all tags assigned to a piece
+    pub fn piece_tags(&self, piece: PieceEntity) -> impl Iterator<Item = &String> {
+        self.piece_tags.get(piece).into_iter().flat_map(|c| {
+            c.iter()
+                .map(|e| self.tag_collections.get_name(e).unwrap())
+        })
     }
 
-    /// returns an iterator over all pieces in a category
-    pub fn category_pieces(&self, category: &String) -> Option<impl Iterator<Item = PieceEntity>> {
-        if let Some(collection) = self.category_collections.get_by_name(category) {
-            Some(collection.iter())
-        } else {
-            None
-        }
+    /// returns an iterator over all pieces in a tag
+    pub fn tag_pieces(&self, tag: &String) -> impl Iterator<Item = PieceEntity> {
+        self.tag_collections
+            .get_by_name(tag)
+            .into_iter()
+            .flat_map(|c| c.iter())
     }
 }
 

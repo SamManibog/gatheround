@@ -85,6 +85,7 @@ pub trait IRenderer {
     fn draw_board(
         &mut self,
         board: &BoardManager<
+            Self::Color,
             Self::Rectangle,
             Self::Vector2,
             Self::ConvexShape,

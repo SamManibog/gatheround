@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use mlua::{Table, Value};
+use mlua::{Lua, Table, Value};
 
 use crate::lua::{FromLuaTable, FromLuaValue};
 
@@ -24,7 +24,7 @@ impl_as_f32!(i8, u8, i16, u16, i32, u32, i64, u64, isize, usize, f64);
 
 /// totally orded subset of floating-point numbers
 /// only supporting comparison operations
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)] 
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 #[repr(transparent)]
 pub struct OrdF32(f32);
 
@@ -39,7 +39,10 @@ impl Ord for OrdF32 {
 impl OrdF32 {
     /// creates a new totally ordered f32, panicing if a NaN value is passed
     pub fn new(val: f32) -> Self {
-        assert!(!val.is_nan(), "Attempted to create an ordered f32 out of a NaN value.");
+        assert!(
+            !val.is_nan(),
+            "Attempted to create an ordered f32 out of a NaN value."
+        );
         Self(val)
     }
 }
@@ -81,6 +84,14 @@ pub trait IVec2: std::fmt::Debug + Sized + Clone + Copy + PartialEq + IConvexSha
     /// instance from another vector
     fn from_other<V: IVec2>(other: V) -> Self {
         Self::from_xy(other.x(), other.y())
+    }
+
+    /// creates a lua table from this vector
+    fn into_lua_table(&self, lua: &Lua) -> mlua::Result<mlua::Table> {
+        let table = lua.create_table_with_capacity(0, 2)?;
+        table.raw_set("x", self.x())?;
+        table.raw_set("y", self.y())?;
+        Ok(table)
     }
 
     /// the origin
@@ -731,7 +742,7 @@ pub trait IRect: Sized + Clone + Copy + IConvexShape {
 #[derive(Debug, Clone, Copy)]
 pub struct RigidTransform<V: IVec2> {
     /// translation
-    pub offset: V,
+    pub position: V,
 
     /// angle in RADIANS
     pub angle: f32,
@@ -740,7 +751,7 @@ pub struct RigidTransform<V: IVec2> {
 impl<V: IVec2> Default for RigidTransform<V> {
     fn default() -> Self {
         Self {
-            offset: V::from_xy(0.0, 0.0),
+            position: V::from_xy(0.0, 0.0),
             angle: 0.0,
         }
     }
@@ -754,18 +765,18 @@ impl<V: IVec2> RigidTransform<V> {
 
     /// apply a transform to a point
     pub fn apply_to_point<V2: IVec2>(&self, point: V2) -> V2 {
-        point.rotated(self.angle).add(self.offset)
+        point.rotated(self.angle).add(self.position)
     }
 
     /// applies the inverse of this transform to a point
     pub fn apply_inv_to_point<V2: IVec2>(&self, point: V2) -> V2 {
-        point.sub(self.offset).rotated(-self.angle)
+        point.sub(self.position).rotated(-self.angle)
     }
 
     /// applies this transform to another
     pub fn apply_to_other(&self, other: &Self) -> Self {
         Self {
-            offset: self.apply_to_point(other.offset),
+            position: self.apply_to_point(other.position),
             angle: other.angle + self.angle,
         }
     }
@@ -773,15 +784,25 @@ impl<V: IVec2> RigidTransform<V> {
     /// applies the inverse of this transform to another
     pub fn apply_inv_to_other(&self, other: &Self) -> Self {
         Self {
-            offset: self.apply_inv_to_point(other.offset),
+            position: self.apply_inv_to_point(other.position),
             angle: other.angle - self.angle,
         }
     }
+
+    /// creates a lua table from this transform
+    pub fn into_lua_table(&self, lua: &Lua) -> mlua::Result<mlua::Table> {
+        let table = lua.create_table_with_capacity(0, 2)?;
+        table.raw_set("x", self.position.x())?;
+        table.raw_set("y", self.position.y())?;
+        table.raw_set("angle", self.angle)?;
+        Ok(table)
+    }
+
 }
 
 impl<V: IVec2> FromLuaTable for RigidTransform<V> {
     fn try_from_lua_table(table: &Table) -> Result<Self, String> {
-        let offset = vec2_from_lua_table(table)?;
+        let position = vec2_from_lua_table(table)?;
 
         let angle = match table.raw_get::<Option<f64>>("angle") {
             Ok(value) => value,
@@ -791,7 +812,7 @@ impl<V: IVec2> FromLuaTable for RigidTransform<V> {
         }
         .unwrap_or(0.0) as f32;
 
-        Ok(Self { offset, angle })
+        Ok(Self { position, angle })
     }
 }
 
@@ -830,7 +851,7 @@ impl<V: IVec2, S: IConvexShape> IConvexShape for TransformedConvexShape<S, V> {
 
         local_point
             .rotated(self.transform.angle)
-            .add(self.transform.offset)
+            .add(self.transform.position)
     }
 }
 
@@ -853,7 +874,7 @@ impl<V: IVec2, S: IConvexShape> IConvexShape for TransformedConvexShapeRef<'_, S
 
         local_point
             .rotated(self.transform.angle)
-            .add(self.transform.offset)
+            .add(self.transform.position)
     }
 }
 
@@ -974,7 +995,7 @@ impl<S: IConvexShape> CollisionShape<S> {
     pub fn aabb_transformed<V: IVec2, R: IRect>(&self, transform: &RigidTransform<V>) -> R {
         let rotated = self.aabb_rotated::<R>(transform.angle);
         R::from_position_dimension(
-            rotated.position::<V>().add(transform.offset),
+            rotated.position::<V>().add(transform.position),
             rotated.dimensions::<V>(),
         )
     }

@@ -15,7 +15,7 @@ use crate::{
     lua::FromLuaTable,
     renderer::{GlobalAssets, ITextureCompiler},
     resources::{
-        CategoryManager, CollisionLayerEntity, CollisionLayerManager, CollisionShapeEntity,
+        TagManager, CollisionLayerEntity, CollisionLayerManager, CollisionShapeEntity,
         DrawLayerManager, PieceCollider, PieceEntity, PileManager, PlayerColor, PlayerManager,
         QuadTreeManager, SnapTargetManager, TextureEntity, TextureManager,
     },
@@ -26,7 +26,7 @@ use crate::{
 ///  - piles
 ///  - unpiled
 ///  - piled
-pub struct BoardManager<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> {
+pub struct BoardManager<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> {
     /// textures resources that can be used
     /// unnamed textures must be uniquely owned
     texture_manager: TextureManager<T, F>,
@@ -42,8 +42,8 @@ pub struct BoardManager<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F
     /// we will ensure that collision layers always have names
     collision_layer_manager: CollisionLayerManager,
 
-    /// the categories of entities
-    category_manager: CategoryManager,
+    /// the tags of entities
+    tag_manager: TagManager,
 
     /// the entity manager for pieces and piles
     piece_entity_manager: NamedEntityManager<PieceEntity>,
@@ -111,9 +111,12 @@ pub struct BoardManager<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F
 
     /// dimensions of the visible area
     visible_rect: R,
+
+    /// the background color of the board
+    pub color: C,
 }
 
-impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V, S, T, F> {
+impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<C, R, V, S, T, F> {
     /// the dimensions of quadtrees relative to actual dimensions
     const QUADTREE_SIZE_RATIO: f32 = 2.0;
 
@@ -129,7 +132,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             collision_shape_manager: Default::default(),
             collision_layer_manager: Default::default(),
             entity_draw_layers: Default::default(),
-            category_manager: Default::default(),
+            tag_manager: Default::default(),
             snap_manager: Default::default(),
             piece_entity_manager: Default::default(),
             debug_entities: Default::default(),
@@ -143,6 +146,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             quadtree: QuadTreeManager::new(quadtree_rect),
             snap_quadtree: QuadTreeManager::new(quadtree_rect),
             visible_rect,
+            color: C::from_rgba(255, 255, 255, 255)
         }
     }
 
@@ -311,6 +315,23 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
         self.piece_textures.insert(piece, new_texture);
     }
 
+    /// gets the transform of the item
+    /// fails if the item does not exist
+    pub fn lua_get_transform(
+        &mut self,
+        lua: &Lua,
+        entity: EntityIdentifier<PieceEntity>,
+    ) -> Result<mlua::Table, String> {
+        let entity = self.validate_entity(entity)?;
+
+        let transform = self.entity_transforms.get(entity).unwrap();
+
+        match transform.into_lua_table(lua) {
+            Ok(x) => Ok(x),
+            Err(msg) => Err(format!("Unable to create vector2 table: {msg}")),
+        }
+    }
+
     /// sets the piece or piles transform
     pub fn set_transform(
         &mut self,
@@ -326,13 +347,13 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
     pub fn set_position(
         &mut self,
         entity: EntityIdentifier<PieceEntity>,
-        offset: V,
+        position: V,
     ) -> Result<(), String> {
         let entity = self.validate_entity(entity)?;
 
         let angle = self.entity_transforms.get(entity).unwrap().angle;
 
-        let transform = RigidTransform { offset, angle };
+        let transform = RigidTransform { position, angle };
 
         self.set_transform_unchecked(entity, transform);
         Ok(())
@@ -346,9 +367,9 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
     ) -> Result<(), String> {
         let entity = self.validate_entity(entity)?;
 
-        let offset = self.entity_transforms.get(entity).unwrap().offset;
+        let position = self.entity_transforms.get(entity).unwrap().position;
 
-        let transform = RigidTransform { offset, angle };
+        let transform = RigidTransform { position, angle };
 
         self.set_transform_unchecked(entity, transform);
         Ok(())
@@ -366,14 +387,14 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
     fn center_entity_unchekced(&mut self, entity: PieceEntity) {
         let global_transform = self.get_entity_global_transform(entity);
         let center = self.dimensions().scaled(0.5);
-        let delta = center.sub(global_transform.offset);
+        let delta = center.sub(global_transform.position);
 
         if let Some(parent) = self.pile_manager.get_containing_pile(entity) {
             let parent_transform = self.entity_transforms.get(parent).unwrap();
             self.set_pile_transform_unchecked(
                 parent,
                 RigidTransform {
-                    offset: parent_transform.offset.add(delta),
+                    position: parent_transform.position.add(delta),
                     angle: parent_transform.angle,
                 },
             );
@@ -382,7 +403,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             self.set_transform_unchecked(
                 entity,
                 RigidTransform {
-                    offset: original_transform.offset.add(delta),
+                    position: original_transform.position.add(delta),
                     angle: original_transform.angle,
                 },
             );
@@ -396,7 +417,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             && self.snap_manager.get_snap_target(player).is_some()
         {
             RigidTransform {
-                offset: self.entity_transforms.get(entity).unwrap().offset,
+                position: self.entity_transforms.get(entity).unwrap().position,
                 angle: transform.angle,
             }
         } else {
@@ -418,7 +439,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
 
         // move any items snapped to this one
         let snap_position = transform
-            .offset
+            .position
             .add(self.pile_manager.get_snap_offset(pile).unwrap());
         if let Some(snapped_player_set) = self.snap_manager.get_snapped_players(pile) {
             let snapped_players: Vec<PlayerColor> = snapped_player_set.iter().collect();
@@ -456,7 +477,12 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             }
         } else {
             let (offset, radius) = self.pile_manager.get_snap_info(pile).unwrap();
-            let snap_position = self.entity_transforms.get(pile).unwrap().offset.add(offset);
+            let snap_position = self
+                .entity_transforms
+                .get(pile)
+                .unwrap()
+                .position
+                .add(offset);
             if radius > 0.0 {
                 self.snap_quadtree.set_aabb(
                     pile,
@@ -498,53 +524,69 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
         }
     }
 
-    /// sets the categories of an item
-    pub fn set_categories(
-        &mut self,
+    /// sets the tags of an item
+    pub fn set_tags<'a, 'b: 'a>(
+        &'b mut self,
         entity: EntityIdentifier<PieceEntity>,
-        categories: &[String],
+        tags: impl Iterator<Item = &'a String>,
     ) -> Result<(), String> {
         let entity = self.validate_entity(entity)?;
 
-        self.category_manager.set_categories(entity, categories);
+        self.tag_manager.set_tags(entity, tags);
 
         Ok(())
     }
 
-    /// adds categories to a piece
-    pub fn add_categories(
-        &mut self,
+    /// adds tags to a piece
+    pub fn add_tags<'a, 'b: 'a>(
+        &'b mut self,
         entity: EntityIdentifier<PieceEntity>,
-        categories: &[String],
+        tags: impl Iterator<Item = &'a String>,
     ) -> Result<(), String> {
         let entity = self.validate_entity(entity)?;
 
-        self.category_manager.add_categories(entity, categories);
+        self.tag_manager.add_tags(entity, tags);
 
         Ok(())
     }
 
-    /// removes categories from a piece
-    pub fn remove_categories(
-        &mut self,
+    /// removes tags from a piece
+    pub fn remove_tags<'a, 'b: 'a>(
+        &'b mut self,
         entity: EntityIdentifier<PieceEntity>,
-        categories: &[String],
+        tags: impl Iterator<Item = &'a String>,
     ) -> Result<(), String> {
         let entity = self.validate_entity(entity)?;
 
-        self.category_manager.remove_categories(entity, categories);
+        self.tag_manager.remove_tags(entity, tags);
         Ok(())
     }
 
-    /// clears the categories from a piece
-    pub fn clear_categories(
+    /// clears the tags from a piece
+    pub fn clear_tags(
         &mut self,
         entity: EntityIdentifier<PieceEntity>,
     ) -> Result<(), String> {
         let entity = self.validate_entity(entity)?;
 
-        self.category_manager.clear_categories(entity);
+        self.tag_manager.clear_tags(entity);
         Ok(())
+    }
+
+    /// checks if an entity has the given tag
+    pub fn has_tag(
+        &self,
+        entity: EntityIdentifier<PieceEntity>,
+        tag: &String,
+    ) -> Result<bool, String> {
+        let entity = self.validate_entity(entity)?;
+
+        Ok(self.tag_manager.has_tag(entity, tag))
+    }
+
+    /// lists all entities with the given tag
+    pub fn get_items_with_tag(&self, tag: &String) -> impl Iterator<Item = PieceEntity> {
+        self.tag_manager.tag_pieces(tag)
     }
 
     /// sets the colliders of a piece
@@ -648,7 +690,8 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
 
         self.entity_draw_order.push_back(entity);
 
-        self.category_manager.add_categories(entity, &ir.categories);
+        self.tag_manager
+            .add_tags(entity, ir.tags.iter());
 
         self.set_piece_transform_unchecked(entity, ir.transform);
 
@@ -673,7 +716,8 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
 
         self.entity_draw_order.push_back(entity);
 
-        self.category_manager.add_categories(entity, &ir.categories);
+        self.tag_manager
+            .add_tags(entity, ir.tags.iter());
 
         self.set_pile_transform_unchecked(entity, ir.transform);
 
@@ -701,7 +745,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
 
         self.set_colliders_unchecked(piece, Vec::new());
         self.quadtree.remove(piece);
-        self.category_manager.clear_categories(piece);
+        self.tag_manager.clear_tags(piece);
         self.debug_entities.remove(piece);
         self.hidden_entities.remove(piece);
         self.no_collision_entities.remove(piece);
@@ -743,7 +787,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
         }
 
         self.snap_manager.remove_snap_target(pile);
-        self.category_manager.clear_categories(pile);
+        self.tag_manager.clear_tags(pile);
         self.debug_entities.remove(pile);
         self.hidden_entities.remove(pile);
         self.no_collision_entities.remove(pile);
@@ -953,7 +997,10 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
                 if radius <= 0.0 {
                     None
                 } else {
-                    Some((self.get_entity_global_transform(p).offset.add(pos), radius))
+                    Some((
+                        self.get_entity_global_transform(p).position.add(pos),
+                        radius,
+                    ))
                 }
             } else {
                 None
@@ -963,7 +1010,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
 
     /// returns an iterator over players, their positions, and their held pieces
     /// players should be drawn on top of every piece
-    pub fn player_draw_iter<'a, 'b, C: IColor>(
+    pub fn player_draw_iter<'a, 'b>(
         &'b self,
         global_assets: &'a GlobalAssets<T>,
     ) -> impl Iterator<Item = (&'a T, V, C)> {
@@ -984,7 +1031,7 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
 
     /// attempts to create a new texture, returning its entity on success
     /// textures must be assigned a name
-    pub fn create_texture<C, IR>(
+    pub fn create_texture<IR>(
         &mut self,
         project_path: &Path,
         name: String,
@@ -1071,14 +1118,14 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             .into_iter()
             .filter(|p| {
                 let (offset, radius) = self.pile_manager.get_snap_info(*p).unwrap();
-                let pile_position = self.get_entity_global_transform(*p).offset.add(offset);
+                let pile_position = self.get_entity_global_transform(*p).position.add(offset);
                 pile_position.distance_to(position) <= radius
             })
             .collect();
 
         contained.sort_unstable_by_key(|p| {
             let offset = self.pile_manager.get_snap_offset(*p).unwrap();
-            let pile_position = self.get_entity_global_transform(*p).offset.add(offset);
+            let pile_position = self.get_entity_global_transform(*p).position.add(offset);
             OrdF32::new(pile_position.distance_to(position))
         });
 
@@ -1582,11 +1629,11 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
             self.snap_manager.set_snap_target(player, None); // allow transform to be modified by unsnapping first
             let held_item = self.player_manager.get_held_item(player).unwrap();
             let transform = RigidTransform {
-                offset: self
+                position: self
                     .entity_transforms
                     .get(pile)
                     .unwrap()
-                    .offset
+                    .position
                     .add(self.pile_manager.get_snap_offset(pile).unwrap()),
                 angle: self.entity_transforms.get(held_item).unwrap().angle,
             };
@@ -1700,17 +1747,10 @@ impl<R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<R, V
 
         let position = self.player_manager.get_position(player).unwrap();
 
-        let table = lua
-            .create_table_with_capacity(0, 2)
-            .expect("Unable to create vector2 table.");
-
-        table.raw_set("x", position.x())
-            .expect("Unable to create vector2 table.");
-
-        table.raw_set("y", position.y())
-            .expect("Unable to create vector2 table.");
-
-        Ok(table)
+        match position.into_lua_table(lua) {
+            Ok(x) => Ok(x),
+            Err(msg) => Err(format!("Unable to create vector2 table: {msg}")),
+        }
     }
 
     /// gets the position of the player
@@ -1783,6 +1823,7 @@ struct BoardDrawIter<
     'a,
     I: Iterator<Item = PieceEntity>,
     FN: Fn(PieceEntity) -> Option<O>,
+    C: IColor,
     R: IRect,
     V: IVec2,
     S: IConvexShape + FromLuaTable,
@@ -1790,7 +1831,7 @@ struct BoardDrawIter<
     F,
     O,
 > {
-    board: &'a BoardManager<R, V, S, T, F>,
+    board: &'a BoardManager<C, R, V, S, T, F>,
     layered_entity_iter: I,
     pile_iter: Option<std::iter::Cloned<std::collections::vec_deque::Iter<'a, PieceEntity>>>,
     output_filter_map: FN,
@@ -1800,13 +1841,14 @@ impl<
     'a,
     I: Iterator<Item = PieceEntity>,
     FN: Fn(PieceEntity) -> Option<O>,
+    C: IColor,
     R: IRect,
     V: IVec2,
     S: IConvexShape + FromLuaTable,
     T,
     F,
     O,
-> Iterator for BoardDrawIter<'a, I, FN, R, V, S, T, F, O>
+> Iterator for BoardDrawIter<'a, I, FN, C, R, V, S, T, F, O>
 {
     type Item = O;
 

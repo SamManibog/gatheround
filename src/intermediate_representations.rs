@@ -1,7 +1,7 @@
 use mlua::{Table, Value};
 
 use crate::{
-    color::{IColor, color_from_lua_table},
+    color::{IColor, color_from_lua_value},
     ecs::EntityTrait,
     geometry::{
         CollisionShape, IConvexShape, IRect, IVec2, RigidTransform, rect_from_lua_table,
@@ -12,19 +12,19 @@ use crate::{
 };
 
 /// a transform for an image, only covers offset and scale
-/// (scale is applied before offset)
+/// (scale is applied before position)
 #[derive(Debug, Clone)]
 pub struct ImageTransform<V: IVec2> {
-    pub offset: V,
+    pub position: V,
     pub scale: f32,
 }
 
 impl<V: IVec2> FromLuaTable for ImageTransform<V> {
     fn try_from_lua_table(table: &Table) -> Result<Self, String> {
-        let offset = if let Ok(vec) = vec2_from_lua_table(table) {
+        let position = if let Ok(vec) = vec2_from_lua_table(table) {
             vec
-        } else if let Ok(offset_table) = table.raw_get::<Table>("pos")
-            && let Ok(vec) = vec2_from_lua_table(&offset_table)
+        } else if let Ok(position_table) = table.raw_get::<Table>("pos")
+            && let Ok(vec) = vec2_from_lua_table(&position_table)
         {
             vec
         } else {
@@ -38,20 +38,20 @@ impl<V: IVec2> FromLuaTable for ImageTransform<V> {
             }
         } as f32;
 
-        Ok(Self { offset, scale })
+        Ok(Self { position, scale })
     }
 }
 
 impl<V: IVec2> ImageTransform<V> {
     pub fn identity() -> Self {
         Self {
-            offset: V::from_xy(0.0, 0.0),
+            position: V::from_xy(0.0, 0.0),
             scale: 1.0,
         }
     }
 
     pub fn transform_vector<T1: IVec2, T2: IVec2>(&self, vector: T1) -> T2 {
-        T2::from_other(vector.scaled(self.scale).add(self.offset))
+        T2::from_other(vector.scaled(self.scale).add(self.position))
     }
 
     pub fn transform_rect<R: IRect>(&self, rect: R) -> R {
@@ -66,7 +66,7 @@ impl<V: IVec2> ImageTransform<V> {
         other: &ImageTransform<V1>,
     ) -> ImageTransform<V2> {
         ImageTransform::<V2> {
-            offset: self.transform_vector(other.offset),
+            position: self.transform_vector(other.position),
             scale: self.scale * other.scale,
         }
     }
@@ -74,12 +74,13 @@ impl<V: IVec2> ImageTransform<V> {
 
 /// information required to put an image on a piece
 #[derive(Debug, Clone)]
-pub struct ImageInfo<V: IVec2> {
+pub struct ImageInfo<C: IColor, V: IVec2> {
     pub transform: ImageTransform<V>,
     pub path: String,
+    pub tint: C,
 }
 
-impl<V: IVec2> FromLuaTable for ImageInfo<V> {
+impl<C: IColor, V: IVec2> FromLuaTable for ImageInfo<C, V> {
     fn try_from_lua_table(table: &Table) -> Result<Self, String> {
         let transform = if let Ok(t) = ImageTransform::<V>::try_from_lua_table(table) {
             t
@@ -91,11 +92,26 @@ impl<V: IVec2> FromLuaTable for ImageInfo<V> {
             return Err("Missing transform field.".to_string());
         };
 
-        if let Ok(path) = table.raw_get::<String>("path") {
-            Ok(Self { transform, path })
+        let path = if let Ok(p) = table.raw_get::<String>("path") {
+            p
         } else {
-            Err("Missing path field.".to_string())
-        }
+            return Err("Missing path field.".to_string());
+        };
+
+        let tint = if let Ok(tint_val) = table.raw_get::<Value>("tint") {
+            match tint_val {
+                Value::Nil => C::from_rgba(255, 255, 255, 255),
+                _ => color_from_lua_value(&tint_val)?,
+            }
+        } else {
+            return Err("Invalid tint field.".to_string());
+        };
+
+        Ok(Self {
+            tint,
+            transform,
+            path,
+        })
     }
 }
 
@@ -243,17 +259,13 @@ impl<C: IColor, R: IRect> FromLuaTable for TextboxInfo<C, R> {
             return Err("Invalid font field.".to_string());
         };
 
-        let color = if let Ok(color_table_opt) = table.raw_get::<Option<Table>>("color") {
-            if let Some(color_table) = color_table_opt {
-                match color_from_lua_table(&color_table) {
-                    Ok(c) => c,
-                    Err(msg) => return Err(format!("Invalid pattern_color field: {msg}")),
-                }
-            } else {
-                C::from_rgba(0, 0, 0, 255)
+        let color = if let Ok(color_val) = table.raw_get::<Value>("color") {
+            match color_val {
+                Value::Nil => C::from_rgba(0, 0, 0, 255),
+                _ => color_from_lua_value(&color_val)?,
             }
         } else {
-            return Err("Invalid pattern_color field.".to_string());
+            return Err("Invalid color field.".to_string());
         };
 
         Ok(Self {
@@ -455,33 +467,23 @@ impl<C: IColor, R: IRect, V: IVec2> FromLuaTable for PatternInfo<C, R, V> {
             return Err("Invalid offset field.".to_string());
         };
 
-        let pattern_color =
-            if let Ok(color_table_opt) = table.raw_get::<Option<Table>>("pattern_color") {
-                if let Some(color_table) = color_table_opt {
-                    match color_from_lua_table(&color_table) {
-                        Ok(c) => c,
-                        Err(msg) => return Err(format!("Invalid pattern_color field: {msg}")),
-                    }
-                } else {
-                    pattern.default_pattern_color()
-                }
-            } else {
-                return Err("Invalid pattern_color field.".to_string());
-            };
+        let pattern_color = if let Ok(color_val) = table.raw_get::<Value>("pattern_color") {
+            match color_val {
+                Value::Nil => pattern.default_pattern_color(),
+                _ => color_from_lua_value(&color_val)?,
+            }
+        } else {
+            return Err("Invalid pattern_color field.".to_string());
+        };
 
-        let background_color =
-            if let Ok(color_table_opt) = table.raw_get::<Option<Table>>("background_color") {
-                if let Some(color_table) = color_table_opt {
-                    match color_from_lua_table(&color_table) {
-                        Ok(c) => c,
-                        Err(msg) => return Err(format!("Invalid background_color field: {msg}")),
-                    }
-                } else {
-                    pattern.default_background_color()
-                }
-            } else {
-                return Err("Invalid background_color field.".to_string());
-            };
+        let background_color = if let Ok(color_val) = table.raw_get::<Value>("background_color") {
+            match color_val {
+                Value::Nil => pattern.default_background_color(),
+                _ => color_from_lua_value(&color_val)?,
+            }
+        } else {
+            return Err("Invalid background_color field.".to_string());
+        };
 
         Ok(Self {
             rect,
@@ -500,7 +502,7 @@ impl<C: IColor, R: IRect, V: IVec2> FromLuaTable for PatternInfo<C, R, V> {
 #[derive(Debug, Clone)]
 pub enum VisualComponent<C: IColor, R: IRect, V: IVec2> {
     Textbox(Box<TextboxInfo<C, R>>),
-    Image(Box<ImageInfo<V>>),
+    Image(Box<ImageInfo<C, V>>),
     Pattern(Box<PatternInfo<C, R, V>>),
 }
 
@@ -715,7 +717,7 @@ pub struct PileIR<V: IVec2> {
     pub transform: RigidTransform<V>,
 
     /// categorizations
-    pub categories: Vec<String>,
+    pub tags: Vec<String>,
 
     /// the relative of the snapping circle
     pub snap_offset: V,
@@ -781,12 +783,8 @@ impl<V: IVec2> FromLuaTable for PileIR<V> {
         let snap_radius = if let Ok(value) = table.raw_get::<Value>("snap_radius") {
             match &value {
                 Value::Nil => 0.0,
-                Value::Number(float) => {
-                    *float as f32
-                }
-                Value::Integer(int) => {
-                    *int as f32
-                }
+                Value::Number(float) => *float as f32,
+                Value::Integer(int) => *int as f32,
                 _ => return Err(format!("Invalid snap_radius field: non-numeric value.")),
             }
         } else {
@@ -825,10 +823,10 @@ impl<V: IVec2> FromLuaTable for PileIR<V> {
             return Err(format!("Invalid draw_layer field."));
         };
 
-        let categories = if let Ok(value) = table.raw_get::<Value>("categories") {
-            vector_from_lua_value(&value, "categories field", "category")?
+        let tags = if let Ok(value) = table.raw_get::<Value>("tags") {
+            vector_from_lua_value(&value, "tags field", "tag")?
         } else {
-            return Err(format!("Invalid categories field."));
+            return Err(format!("Invalid tags field."));
         };
 
         Ok(Self {
@@ -836,7 +834,7 @@ impl<V: IVec2> FromLuaTable for PileIR<V> {
             transform,
             snap_offset,
             snap_radius,
-            categories,
+            tags,
             draw_layer,
         })
     }
@@ -907,7 +905,7 @@ pub struct PieceIR<S: IConvexShape + FromLuaTable, V: IVec2> {
     pub draw_layer: i32,
 
     /// categorizations
-    pub categories: Vec<String>,
+    pub tags: Vec<String>,
 }
 
 impl<S: IConvexShape + FromLuaTable, V: IVec2> FromLuaValue for PieceIR<S, V> {
@@ -994,10 +992,10 @@ impl<S: IConvexShape + FromLuaTable, V: IVec2> FromLuaTable for PieceIR<S, V> {
             return Err(format!("Invalid draw_layer field."));
         };
 
-        let categories = if let Ok(value) = table.raw_get::<Value>("categories") {
-            vector_from_lua_value(&value, "categories field", "category")?
+        let tags = if let Ok(value) = table.raw_get::<Value>("tags") {
+            vector_from_lua_value(&value, "tags field", "tag")?
         } else {
-            return Err(format!("Invalid categories field."));
+            return Err(format!("Invalid tags field."));
         };
 
         Ok(Self {
@@ -1006,7 +1004,7 @@ impl<S: IConvexShape + FromLuaTable, V: IVec2> FromLuaTable for PieceIR<S, V> {
             transform,
             colliders,
             draw_layer,
-            categories,
+            tags,
         })
     }
 }

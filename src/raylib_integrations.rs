@@ -140,6 +140,7 @@ impl<'a> RaylibTextureCompiler<'a> {
         transform: &ImageTransform<Vector2>,
         texture: &RenderTexture2D,
         target: &mut RenderTexture2D,
+        tint: Color,
     ) {
         self.rl
             .draw_texture_mode(&self.thread, target, |mut painter| {
@@ -148,20 +149,13 @@ impl<'a> RaylibTextureCompiler<'a> {
                     (texture.width() as f32, texture.height() as f32).neg_y(),
                 );
                 let dst_rect = Rectangle::from_center_dimension(
-                    transform.offset,
+                    transform.position,
                     src_rect
                         .dimensions::<Vector2>()
                         .scaled(transform.scale)
                         .neg_y(),
                 );
-                painter.draw_texture_pro(
-                    texture,
-                    src_rect,
-                    dst_rect,
-                    Vector2::ZERO,
-                    0.0,
-                    Color::WHITE,
-                );
+                painter.draw_texture_pro(texture, src_rect, dst_rect, Vector2::ZERO, 0.0, tint);
             });
     }
 
@@ -649,7 +643,7 @@ impl<'a> ITextureCompiler for RaylibTextureCompiler<'a> {
                             visual_component_provider.get_or_load_image(self, &i.path)
                         {
                             let r = Rectangle::from_center_dimension(
-                                i.transform.offset,
+                                i.transform.position,
                                 Vector2::from_xy(
                                     image_texture.width() as f32,
                                     image_texture.height() as f32,
@@ -685,7 +679,7 @@ impl<'a> ITextureCompiler for RaylibTextureCompiler<'a> {
             .expect("Could not create render texture.");
 
         let texture_transform = ImageTransform::<Vector2> {
-            offset: Vector2::from_xy(width as f32, height as f32).scale(0.5),
+            position: Vector2::from_xy(width as f32, height as f32).scale(0.5),
             scale: 1.0,
         };
 
@@ -707,7 +701,7 @@ impl<'a> ITextureCompiler for RaylibTextureCompiler<'a> {
             .expect("Could not create magnified render texture.");
 
         let magnified_transform = ImageTransform::<Vector2> {
-            offset: Vector2::from_xy(mangnified_width as f32, magnified_height as f32).scale(0.5),
+            position: Vector2::from_xy(mangnified_width as f32, magnified_height as f32).scale(0.5),
             scale: magnification,
         };
 
@@ -736,11 +730,13 @@ impl<'a> ITextureCompiler for RaylibTextureCompiler<'a> {
                             &texture_transform.transform_other(&i.transform),
                             &image,
                             &mut texture,
+                            i.tint,
                         );
                         self.draw_texture(
                             &magnified_transform.transform_other(&i.transform),
                             &image,
                             &mut texture_magnified,
+                            i.tint,
                         );
                     }
                 }
@@ -864,6 +860,7 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
     fn draw_board(
         &mut self,
         board: &crate::board::BoardManager<
+            Color,
             Rectangle,
             Vector2,
             ConvexHull<Vector2>,
@@ -915,7 +912,7 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
                 height: -texture.height() as f32,
             };
             let dst_rect = Rectangle::from_position_dimension(
-                transform.offset,
+                transform.position,
                 src_rect.dimensions::<Vector2>().neg_y(),
             );
             painter.draw_texture_pro(
@@ -966,7 +963,7 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
 
         self.rl
             .draw_texture_mode(self.thread, output_texture, |mut painter| {
-                painter.clear_background(Color::BLANK);
+                painter.clear_background(board.color);
 
                 // draw regular layers
                 for layer in draw_layers.values() {
@@ -993,7 +990,7 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
                         height: -texture.height() as f32,
                     };
                     let dst_rect = Rectangle::from_position_dimension(
-                        transform.offset,
+                        transform.position,
                         src_rect.dimensions::<Vector2>().neg_y(),
                     );
                     painter.draw_texture_pro(
@@ -1051,7 +1048,7 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
                 }
 
                 // draw player hands
-                for (texture, position, tint) in board.player_draw_iter::<Color>(&assets) {
+                for (texture, position, tint) in board.player_draw_iter(&assets) {
                     let src_rect = Rectangle {
                         x: 0.0,
                         y: 0.0,
@@ -1407,7 +1404,7 @@ pub fn run_game(project_path: &Path) {
     // initialize game resources
     let board_dimensions = Vector2::from_xy(1920.0, 1080.0);
     let mut board =
-        BoardManager::<Rectangle, Vector2, ConvexHull<Vector2>, RenderTexture2D, Font>::new(
+        BoardManager::<Color, Rectangle, Vector2, ConvexHull<Vector2>, RenderTexture2D, Font>::new(
             board_dimensions,
         );
     let _ = board.add_player(test_player, "Player".to_string());
@@ -1551,7 +1548,7 @@ pub fn run_game(project_path: &Path) {
             rl_renderer.draw_board(&board_cell.borrow(), &global_assets, &mut output_texture);
 
             rl.draw(&thread, |mut painter| {
-                painter.clear_background(Color::RAYWHITE);
+                painter.clear_background(board_cell.borrow().color);
 
                 let src_rect =
                     Rectangle::from_position_dimension((0.0, 0.0), board_dimensions.neg_y());

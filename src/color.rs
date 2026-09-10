@@ -1,4 +1,4 @@
-use mlua::Table;
+use mlua::{Table, Value};
 
 pub trait IColor: Clone {
     fn r(&self) -> u8;
@@ -52,6 +52,22 @@ pub trait IColor: Clone {
         } else {
             None
         }
+    }
+}
+
+/// attempt to get a color from a lua value
+pub fn color_from_lua_value<C: IColor>(value: &Value) -> Result<C, String> {
+    match value {
+        Value::String(s) => {
+            let rust_str = s.to_string_lossy();
+            if let Some(c) = C::try_from_hex_str(&rust_str) {
+                Ok(c)
+            } else {
+                Err(format!("Invalid color hex values: {rust_str}"))
+            }
+        },
+        Value::Table(t) => color_from_lua_table(&t),
+        _ => Err(format!("Invalid color: expected table or string value.")),
     }
 }
 
