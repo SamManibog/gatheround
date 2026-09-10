@@ -138,9 +138,23 @@ impl<V: IVec2> PileManager<V> {
         self.piles.get(pile).map(|s| s.snap_offset)
     }
 
+    /// gets sets the snap offset of the pile
+    pub fn set_snap_offset(&mut self, pile: PieceEntity, snap_offset: V) {
+        if let Some(s) = self.piles.get_mut(pile) {
+            s.snap_offset = snap_offset;
+        }
+    }
+
     /// gets the snap radius of the pile
     pub fn get_snap_radius(&self, pile: PieceEntity) -> Option<f32> {
         self.piles.get(pile).map(|s| s.snap_radius)
+    }
+
+    /// gets sets the snap radius of the pile
+    pub fn set_snap_radius(&mut self, pile: PieceEntity, snap_radius: f32) {
+        if let Some(s) = self.piles.get_mut(pile) {
+            s.snap_radius = snap_radius;
+        }
     }
 
     /// gets the pieces on the given pile

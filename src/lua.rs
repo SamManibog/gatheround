@@ -317,8 +317,8 @@ pub fn get_game_lua_instance(
                     .try_borrow_mut()
                     .expect("board is already borrowed");
 
-                match board.lua_get_player_position(&lua, player) {
-                    Ok(p) => Ok(p),
+                match board.get_player_position(player) {
+                    Ok(p) => Ok(p.into_lua_table(lua)),
                     Err(msg) => Err(mlua::Error::RuntimeError(msg)),
                 }
             }
@@ -355,34 +355,6 @@ pub fn get_game_lua_instance(
                 match board.set_player_position(player, position) {
                     Ok(()) => Ok(()),
 
-                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
-                }
-            }
-        }
-    );
-
-    define_game_api!(
-        "get_transform",
-        lua,
-        project_path,
-        board_cell,
-        rl_cell,
-        thread_cell,
-        {
-            move |lua, item_val: Value| {
-                // try to parse the entity
-                let item_result = EntityIdentifier::try_from_lua_value(&item_val);
-                if let Err(msg) = item_result {
-                    return Err(mlua::Error::RuntimeError(msg));
-                }
-                let item = item_result.unwrap();
-
-                let mut board = board_cell
-                    .try_borrow_mut()
-                    .expect("board is already borrowed");
-
-                match board.lua_get_transform(&lua, item) {
-                    Ok(p) => Ok(p),
                     Err(msg) => Err(mlua::Error::RuntimeError(msg)),
                 }
             }
@@ -492,6 +464,129 @@ pub fn get_game_lua_instance(
     );
 
     define_game_api!(
+        "set_snap_offset",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |_, (value, table): (Value, Table)| {
+                // try to parse the entity
+                let entity_result = EntityIdentifier::try_from_lua_value(&value);
+                if let Err(msg) = entity_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let entity = entity_result.unwrap();
+
+                // try to parse the lua table
+                let object_result = vec2_from_lua_table::<Vector2>(&table);
+                if let Err(msg) = object_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let object = object_result.unwrap();
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.set_snap_offset(entity, object) {
+                    Ok(()) => Ok(()),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
+        "get_snap_offset",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, value: Value| {
+                // try to parse the entity
+                let entity_result = EntityIdentifier::try_from_lua_value(&value);
+                if let Err(msg) = entity_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let entity = entity_result.unwrap();
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.get_snap_offset(entity) {
+                    Ok(offset) => Ok(offset.into_lua_table(lua)?),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
+        "set_snap_radius",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |_, (value, radius): (Value, f32)| {
+                // try to parse the entity
+                let entity_result = EntityIdentifier::try_from_lua_value(&value);
+                if let Err(msg) = entity_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let entity = entity_result.unwrap();
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.set_snap_radius(entity, radius) {
+                    Ok(()) => Ok(()),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
+        "get_snap_radius",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |_, value: Value| {
+                // try to parse the entity
+                let entity_result = EntityIdentifier::try_from_lua_value(&value);
+                if let Err(msg) = entity_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let entity = entity_result.unwrap();
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.get_snap_radius(entity) {
+                    Ok(r) => Ok(r),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
         "get_transform",
         lua,
         project_path,
@@ -511,8 +606,8 @@ pub fn get_game_lua_instance(
                     .try_borrow_mut()
                     .expect("board is already borrowed");
 
-                match board.lua_get_transform(&lua, item) {
-                    Ok(transform) => Ok(transform),
+                match board.get_transform(item) {
+                    Ok(transform) => Ok(transform.into_lua_table(lua)?),
 
                     Err(msg) => Err(mlua::Error::RuntimeError(msg)),
                 }

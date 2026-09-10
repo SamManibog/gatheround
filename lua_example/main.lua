@@ -126,7 +126,7 @@ local top_left_tile = {
     x = board_transform.x - board_length * 0.5 + tile_length * 0.5,
     y = board_transform.y - board_length * 0.5 + tile_length * 0.5,
 }
-local tile_snap_radius = tile_length / 2 * 1.414
+local tile_snap_radius = tile_length
 
 local rows = "87654321"
 local cols = "abcdefgh"

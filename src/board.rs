@@ -15,9 +15,9 @@ use crate::{
     lua::FromLuaTable,
     renderer::{GlobalAssets, ITextureCompiler},
     resources::{
-        TagManager, CollisionLayerEntity, CollisionLayerManager, CollisionShapeEntity,
-        DrawLayerManager, PieceCollider, PieceEntity, PileManager, PlayerColor, PlayerManager,
-        QuadTreeManager, SnapTargetManager, TextureEntity, TextureManager,
+        CollisionLayerEntity, CollisionLayerManager, CollisionShapeEntity, DrawLayerManager,
+        PieceCollider, PieceEntity, PileManager, PlayerColor, PlayerManager, QuadTreeManager,
+        SnapTargetManager, TagManager, TextureEntity, TextureManager,
     },
 };
 
@@ -116,7 +116,9 @@ pub struct BoardManager<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLua
     pub color: C,
 }
 
-impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardManager<C, R, V, S, T, F> {
+impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F>
+    BoardManager<C, R, V, S, T, F>
+{
     /// the dimensions of quadtrees relative to actual dimensions
     const QUADTREE_SIZE_RATIO: f32 = 2.0;
 
@@ -146,7 +148,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardM
             quadtree: QuadTreeManager::new(quadtree_rect),
             snap_quadtree: QuadTreeManager::new(quadtree_rect),
             visible_rect,
-            color: C::from_rgba(255, 255, 255, 255)
+            color: C::from_rgba(255, 255, 255, 255),
         }
     }
 
@@ -317,19 +319,12 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardM
 
     /// gets the transform of the item
     /// fails if the item does not exist
-    pub fn lua_get_transform(
+    pub fn get_transform(
         &mut self,
-        lua: &Lua,
         entity: EntityIdentifier<PieceEntity>,
-    ) -> Result<mlua::Table, String> {
+    ) -> Result<RigidTransform<V>, String> {
         let entity = self.validate_entity(entity)?;
-
-        let transform = self.entity_transforms.get(entity).unwrap();
-
-        match transform.into_lua_table(lua) {
-            Ok(x) => Ok(x),
-            Err(msg) => Err(format!("Unable to create vector2 table: {msg}")),
-        }
+        Ok(*self.entity_transforms.get(entity).unwrap())
     }
 
     /// sets the piece or piles transform
@@ -438,9 +433,71 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardM
         self.update_pile_collisions_unchecked(pile);
 
         // move any items snapped to this one
-        let snap_position = transform
+        let snap_offset = self.pile_manager.get_snap_offset(pile).unwrap();
+        self.set_snap_offset_unchecked(pile, snap_offset);
+    }
+
+    /// sets the snap radius of a pile
+    pub fn set_snap_radius(
+        &mut self,
+        pile: EntityIdentifier<PieceEntity>,
+        radius: f32,
+    ) -> Result<(), String> {
+        let pile = self.validate_pile(pile)?;
+
+        self.pile_manager.set_snap_radius(pile, radius);
+        let snap_position = self
+            .entity_transforms
+            .get(pile)
+            .unwrap()
             .position
             .add(self.pile_manager.get_snap_offset(pile).unwrap());
+        if radius > 0.0 {
+            self.snap_quadtree.set_aabb(
+                pile,
+                R::from_center_dimension(snap_position, (radius * 2.0, radius * 2.0)),
+            );
+        } else {
+            self.snap_quadtree.remove(pile);
+        }
+
+        Ok(())
+    }
+
+    /// gets the snap radius of a pile
+    pub fn get_snap_radius(&mut self, pile: EntityIdentifier<PieceEntity>) -> Result<f32, String> {
+        let pile = self.validate_pile(pile)?;
+        Ok(self.pile_manager.get_snap_radius(pile).unwrap())
+    }
+
+    /// sets the snap offset of a pile
+    pub fn set_snap_offset(
+        &mut self,
+        pile: EntityIdentifier<PieceEntity>,
+        offset: V,
+    ) -> Result<(), String> {
+        let pile = self.validate_pile(pile)?;
+        self.set_snap_offset_unchecked(pile, offset);
+        Ok(())
+    }
+
+    /// gets the snap offset of a pile
+    pub fn get_snap_offset(&mut self, pile: EntityIdentifier<PieceEntity>) -> Result<V, String> {
+        let pile = self.validate_pile(pile)?;
+        Ok(self.pile_manager.get_snap_offset(pile).unwrap())
+    }
+
+    /// sets the snap offset of a pile without checking whether the pile is valid
+    /// also moves pieces snapped to this one
+    fn set_snap_offset_unchecked(&mut self, pile: PieceEntity, offset: V) {
+        self.pile_manager.set_snap_offset(pile, offset);
+
+        let snap_position = self
+            .entity_transforms
+            .get(pile)
+            .unwrap()
+            .position
+            .add(offset);
         if let Some(snapped_player_set) = self.snap_manager.get_snapped_players(pile) {
             let snapped_players: Vec<PlayerColor> = snapped_player_set.iter().collect();
             for player in snapped_players {
@@ -563,10 +620,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardM
     }
 
     /// clears the tags from a piece
-    pub fn clear_tags(
-        &mut self,
-        entity: EntityIdentifier<PieceEntity>,
-    ) -> Result<(), String> {
+    pub fn clear_tags(&mut self, entity: EntityIdentifier<PieceEntity>) -> Result<(), String> {
         let entity = self.validate_entity(entity)?;
 
         self.tag_manager.clear_tags(entity);
@@ -690,8 +744,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardM
 
         self.entity_draw_order.push_back(entity);
 
-        self.tag_manager
-            .add_tags(entity, ir.tags.iter());
+        self.tag_manager.add_tags(entity, ir.tags.iter());
 
         self.set_piece_transform_unchecked(entity, ir.transform);
 
@@ -716,8 +769,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardM
 
         self.entity_draw_order.push_back(entity);
 
-        self.tag_manager
-            .add_tags(entity, ir.tags.iter());
+        self.tag_manager.add_tags(entity, ir.tags.iter());
 
         self.set_pile_transform_unchecked(entity, ir.transform);
 
@@ -1733,23 +1785,6 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> BoardM
 
             // re-enable collisions
             self.update_collisions_unchecked(entity);
-        }
-    }
-
-    /// gets the position of the player
-    /// fails if the player does not exist
-    pub fn lua_get_player_position(
-        &mut self,
-        lua: &Lua,
-        player: PlayerColor,
-    ) -> Result<mlua::Table, String> {
-        self.validate_player(player)?;
-
-        let position = self.player_manager.get_position(player).unwrap();
-
-        match position.into_lua_table(lua) {
-            Ok(x) => Ok(x),
-            Err(msg) => Err(format!("Unable to create vector2 table: {msg}")),
         }
     }
 
