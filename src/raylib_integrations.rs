@@ -20,7 +20,6 @@ use raylib::{
 use crate::{
     board::BoardManager,
     color::IColor,
-    ecs::EntityTrait,
     geometry::{ConvexHull, IConvexShape, IRect, IVec2},
     intermediate_representations::{
         Alignment, ImageTransform, PatternInfo, PatternType, TextboxInfo, VisualComponent,
@@ -1072,6 +1071,29 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
                         tint,
                     );
                 }
+
+                // draw snap circles
+                for (position, radius) in board.debug_snap_circle_draw_iter() {
+                    let segments = (radius.ceil() as i32 * 2).min(24);
+                    painter.draw_ring(
+                        position,
+                        (radius - Self::DEBUG_OUTLINE_THICKNESS * 0.5).max(0.0),
+                        radius + Self::DEBUG_OUTLINE_THICKNESS * 0.5,
+                        0.0,
+                        360.0,
+                        segments,
+                        Color::BLACK,
+                    );
+                    painter.draw_ring(
+                        position,
+                        (radius - Self::DEBUG_THICKNESS * 0.5).max(0.0),
+                        radius + Self::DEBUG_THICKNESS * 0.5,
+                        0.0,
+                        360.0,
+                        segments,
+                        Color::WHITE,
+                    );
+                }
             });
     }
 }
@@ -1452,49 +1474,54 @@ pub fn run_game(project_path: &Path) {
             if rl.is_mouse_button_pressed(raylib::ffi::MouseButton::MOUSE_BUTTON_LEFT) {
                 drop(rl);
 
-                let mut board = board_cell.borrow_mut();
-                if let Some(piece) = board.piece_to_grab(test_player) {
-                    drop(board);
+                let grab_attempted_fn: mlua::Function = lua
+                    .globals()
+                    .raw_get("grabAttempted")
+                    .expect("grabAttempted has been overwritten to a non-function value.");
+                let name_string = lua
+                    .create_string(test_player.name())
+                    .expect("unable to create player name string");
 
-                    let grab_attempted_fn: mlua::Function = lua
-                        .globals()
-                        .raw_get("grabAttempted")
-                        .expect("grabAttempted has been overwritten to a non-function value.");
-                    let name_string = lua
-                        .create_string(test_player.name())
-                        .expect("unable to create player name string");
-
-                    let _: MultiValue = grab_attempted_fn
-                        .call((name_string, piece.id()))
-                        .expect("grabAttempted has been overwritten with an invalid function.");
-                }
+                let _: MultiValue = grab_attempted_fn
+                    .call(name_string)
+                    .expect("grabAttempted has been overwritten with an invalid function.");
             } else if rl.is_mouse_button_pressed(raylib::ffi::MouseButton::MOUSE_BUTTON_RIGHT) {
                 drop(rl);
 
-                let board = board_cell.borrow_mut();
-                if let Some(piece) = board.get_held_item(test_player) {
-                    drop(board);
+                let drop_attempted_fn: mlua::Function = lua
+                    .globals()
+                    .raw_get("dropAttempted")
+                    .expect("dropAttempted has been overwritten to a non-function value.");
+                let name_string = lua
+                    .create_string(test_player.name())
+                    .expect("unable to create player name string");
 
-                    let drop_attempted_fn: mlua::Function = lua
-                        .globals()
-                        .raw_get("dropAttempted")
-                        .expect("dropAttempted has been overwritten to a non-function value.");
-                    let name_string = lua
-                        .create_string(test_player.name())
-                        .expect("unable to create player name string");
-
-                    let _: MultiValue = drop_attempted_fn
-                        .call((name_string, piece.id()))
-                        .expect("dropAttempted has been overwritten with an invalid function.");
-                }
+                let _: MultiValue = drop_attempted_fn
+                    .call(name_string)
+                    .expect("dropAttempted has been overwritten with an invalid function.");
             }
         }
+
+        // update positions
         {
             let rl = rl_cell.borrow_mut();
             let mut board = board_cell.borrow_mut();
             board
                 .set_player_position(test_player, rl.get_mouse_position().sub(padding))
                 .expect("player should be valid");
+        }
+        {
+            let player_moved_fn: mlua::Function = lua
+                .globals()
+                .raw_get("playerMoved")
+                .expect("playerMoved has been overwritten to a non-function value.");
+            let name_string = lua
+                .create_string(test_player.name())
+                .expect("unable to create player name string");
+
+            let _: MultiValue = player_moved_fn
+                .call(name_string)
+                .expect("playerMoved has been overwritten with an invalid function.");
         }
 
         // update commands

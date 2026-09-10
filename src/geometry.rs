@@ -22,6 +22,28 @@ macro_rules! impl_as_f32 {
 }
 impl_as_f32!(i8, u8, i16, u16, i32, u32, i64, u64, isize, usize, f64);
 
+/// totally orded subset of floating-point numbers
+/// only supporting comparison operations
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)] 
+#[repr(transparent)]
+pub struct OrdF32(f32);
+
+impl Eq for OrdF32 {}
+
+impl Ord for OrdF32 {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0.partial_cmp(&other.0).unwrap()
+    }
+}
+
+impl OrdF32 {
+    /// creates a new totally ordered f32, panicing if a NaN value is passed
+    pub fn new(val: f32) -> Self {
+        assert!(!val.is_nan(), "Attempted to create an ordered f32 out of a NaN value.");
+        Self(val)
+    }
+}
+
 /// attempt to instance from a lua value
 pub fn vec2_from_lua_value<V: IVec2>(value: &mlua::Value) -> Result<V, String> {
     match value {
@@ -130,6 +152,11 @@ pub trait IVec2: std::fmt::Debug + Sized + Clone + Copy + PartialEq + IConvexSha
     /// gets the distance between this vector and the origin
     fn length(&self) -> f32 {
         f32::sqrt(self.x() * self.x() + self.y() * self.y())
+    }
+
+    /// gets the distance between two points
+    fn distance_to<V: IVec2>(&self, other: V) -> f32 {
+        self.sub(other).length()
     }
 
     /// gets the normalized version of this vector

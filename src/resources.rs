@@ -169,11 +169,11 @@ impl<V: IVec2> PileManager<V> {
     /// panics if the given entity is already a pile or another piece
     pub fn create_pile(&mut self, entity: PieceEntity, snap_radius: f32, snap_offset: V) {
         debug_assert!(
-            self.is_pile(entity),
+            !self.is_pile(entity),
             "Attempted to recreate an existing pile."
         );
         debug_assert!(
-            self.is_on_pile(entity),
+            !self.is_on_pile(entity),
             "Attempted to convert a piece to a pile."
         );
 
@@ -300,12 +300,7 @@ impl Default for CategoryManager {
 impl CategoryManager {
     /// adds categories to a piece
     pub fn add_categories(&mut self, piece: PieceEntity, categories: &[String]) {
-        let piece_categories = if let Some(val) = self.piece_categories.get_mut(piece) {
-            val
-        } else {
-            self.piece_categories.insert(piece, DenseSet::new());
-            self.piece_categories.get_mut(piece).unwrap()
-        };
+        let piece_categories = self.piece_categories.get_mut_or_insert(piece, || DenseSet::new());
 
         for category in categories.iter() {
             let (category_entity, category_collection) =
@@ -345,6 +340,8 @@ impl CategoryManager {
                 self.category_collections.remove(category_entity);
             }
         }
+
+        self.piece_categories.remove(piece);
     }
 
     /// removes specific categories from a piece
@@ -367,6 +364,10 @@ impl CategoryManager {
                     self.category_collections.remove(category_entity);
                 }
             }
+        }
+
+        if piece_categories.is_empty() {
+            self.piece_categories.remove(piece);
         }
     }
 
@@ -537,7 +538,7 @@ impl<R: IRect> QuadTreeManager<R> {
     pub fn new(rect: R) -> Self {
         Self {
             aabbs: Default::default(),
-            quadtree: QuadTree::new(rect,)
+            quadtree: QuadTree::new(rect),
         }
     }
 
@@ -563,6 +564,11 @@ impl<R: IRect> QuadTreeManager<R> {
         // insert new aabb into quadtree
         self.quadtree
             .insert(piece, &|e| *self.aabbs.get(*e).unwrap());
+    }
+
+    /// returns an iterator over contained entities
+    pub fn entity_iter(&self) -> impl Iterator<Item = PieceEntity> {
+        self.aabbs.entity_iter()
     }
 
     /// queries the quadtree for entity aabbs on the given point
@@ -716,15 +722,62 @@ impl EntityTrait for PlayerColor {
 #[derive(Debug)]
 pub struct SnapTargetManager {
     player_to_pile: DenseComponentManager<PlayerColor, PieceEntity>,
-    pile_to_layer: DenseComponentManager<PieceEntity, PlayerColor>,
+    pile_to_players: DenseComponentManager<PieceEntity, DenseSet<PlayerColor>>,
 }
 
 impl Default for SnapTargetManager {
     fn default() -> Self {
         Self {
-            player_to_pile: Default::default(),
-            pile_to_layer: Default::default(),
+            player_to_pile: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
+            pile_to_players: Default::default(),
         }
+    }
+}
+
+impl SnapTargetManager {
+    /// sets the pile a player's contents is snapping to
+    pub fn set_snap_target(&mut self, player: PlayerColor, pile_opt: Option<PieceEntity>) {
+        // get rid of player's original snap target
+        if let Some(old_pile) = self.player_to_pile.get(player) {
+            let players = self.pile_to_players.get_mut(*old_pile).unwrap();
+            players.remove(player);
+
+            if players.is_empty() {
+                self.pile_to_players.remove(*old_pile);
+            }
+        }
+
+        // set new snap target
+        if let Some(pile) = pile_opt {
+            self.player_to_pile.insert(player, pile);
+            self.pile_to_players
+                .get_mut_or_insert(pile, || DenseSet::with_capacity(PlayerColor::COLOR_COUNT))
+                .insert(player);
+        } else {
+            self.player_to_pile.remove(player);
+        }
+    }
+
+    // removes a pile from the snap manager, returning the set of players that snap to the pile
+    pub fn remove_snap_target(&mut self, pile: PieceEntity) -> DenseSet<PlayerColor> {
+        if let Some(players) = self.pile_to_players.remove(pile) {
+            for player in players.iter() {
+                self.player_to_pile.remove(player);
+            }
+            players
+        } else {
+            DenseSet::with_capacity(0)
+        }
+    }
+
+    /// gets the pile a player's contents is snapping to
+    pub fn get_snap_target(&self, player: PlayerColor) -> Option<PieceEntity> {
+        self.player_to_pile.get(player).cloned()
+    }
+
+    /// gets the set of players that snap to the given pile
+    pub fn get_snapped_players(&self, pile: PieceEntity) -> Option<&DenseSet<PlayerColor>> {
+        self.pile_to_players.get(pile)
     }
 }
 

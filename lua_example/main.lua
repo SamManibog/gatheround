@@ -149,3 +149,14 @@ local board = create_piece({
     draw_layer = -400,
 })
 center_item(board)
+
+local test_pile = create_pile({
+    name = "test_pile",
+    snap_radius = 40.0,
+    transform = { x = 300, y = 300, },
+})
+center_item(test_pile)
+show_debug(test_pile)
+
+
+
