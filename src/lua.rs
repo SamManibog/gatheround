@@ -13,16 +13,10 @@ use raylib::{
 };
 
 use crate::{
-    board::BoardManager,
-    color::{IColor, color_from_lua_value},
-    ecs::EntityTrait,
-    geometry::{
-        ConvexHull, IConvexShape, IRect, IVec2, RigidTransform, vec2_from_lua_table,
-        vec2_from_lua_value,
-    },
-    intermediate_representations::{EntityIdentifier, PieceIR, PileIR, VisualInfo},
-    raylib_integrations::RaylibTextureCompiler,
-    resources::PlayerColor,
+    board::BoardManager, color::{IColor, color_from_lua_value}, ecs::EntityTrait, geometry::{
+        ConvexHull, IConvexShape, IRect, IVec2, RigidTransform, finite_vec2_from_lua_table,
+        finite_vec2_from_lua_value,
+    }, intermediate_representations::{EntityIdentifier, PieceIR, PileIR, VisualInfo}, raylib_integrations::RaylibTextureCompiler, resources::PlayerColor
 };
 
 const MAIN_LUA_FILE: &str = "main.lua";
@@ -39,6 +33,34 @@ pub trait FromLuaValue: Sized {
     fn try_from_lua_value(value: &Value) -> Result<Self, String>;
 }
 
+pub fn finite_f32_from_lua_value(value: &Value) -> Result<f32, String> {
+    match value {
+        Value::Integer(number) => {
+            let min = (f32::MIN as f64).floor() as i64;
+            let max = (f32::MAX as f64).ceil() as i64;
+
+            if *number < min || *number > max {
+                return Err(format!("non-finite value."))
+            } else {
+                Ok(*number as f32)
+            }
+        },
+
+        Value::Number(number) => {
+            let min = f32::MIN as f64;
+            let max = f32::MAX as f64;
+
+            if !number.is_finite() || *number < min || *number > max {
+                return Err(format!("non-finite value."))
+            } else {
+                Ok(*number as f32)
+            }
+        },
+
+        _ => Err(format!("non-numeric type."))
+    }
+}
+
 impl FromLuaValue for String {
     fn try_from_lua_value(value: &Value) -> Result<Self, String> {
         if let Value::String(string) = value {
@@ -50,6 +72,30 @@ impl FromLuaValue for String {
         } else {
             Err(format!("non-string value."))
         }
+    }
+}
+
+impl FromLuaValue for f32 {
+    fn try_from_lua_value(value: &Value) -> Result<Self, String> {
+        let value = match value {
+            Value::Integer(n) => *n as f64,
+            Value::Number(n) => *n as f64,
+            _ => return Err(format!("non-numeric type.")),
+        };
+
+        Ok(value as f32)
+    }
+}
+
+impl FromLuaValue for f64 {
+    fn try_from_lua_value(value: &Value) -> Result<Self, String> {
+        let value = match value {
+            Value::Integer(n) => *n as f64,
+            Value::Number(n) => *n as f64,
+            _ => return Err(format!("non-numeric type.")),
+        };
+
+        Ok(value)
     }
 }
 
@@ -342,7 +388,7 @@ pub fn get_game_lua_instance(
                 let player = player_result.unwrap();
 
                 // try to parse the lua table
-                let position_result = vec2_from_lua_table(&position_val);
+                let position_result = finite_vec2_from_lua_table(&position_val);
                 if let Err(msg) = position_result {
                     return Err(mlua::Error::RuntimeError(msg));
                 }
@@ -415,7 +461,7 @@ pub fn get_game_lua_instance(
                 let entity = entity_result.unwrap();
 
                 // try to parse the lua table
-                let object_result = vec2_from_lua_table::<Vector2>(&table);
+                let object_result = finite_vec2_from_lua_table::<Vector2>(&table);
                 if let Err(msg) = object_result {
                     return Err(mlua::Error::RuntimeError(msg));
                 }
@@ -480,7 +526,7 @@ pub fn get_game_lua_instance(
                 let entity = entity_result.unwrap();
 
                 // try to parse the lua table
-                let object_result = vec2_from_lua_table::<Vector2>(&table);
+                let object_result = finite_vec2_from_lua_table::<Vector2>(&table);
                 if let Err(msg) = object_result {
                     return Err(mlua::Error::RuntimeError(msg));
                 }
@@ -1176,7 +1222,7 @@ pub fn get_game_lua_instance(
         {
             move |_, point_val: Value| {
                 // try to parse the entity
-                let point_result = vec2_from_lua_value(&point_val);
+                let point_result = finite_vec2_from_lua_value(&point_val);
                 if let Err(msg) = point_result {
                     return Err(mlua::Error::RuntimeError(msg));
                 }
@@ -1201,7 +1247,7 @@ pub fn get_game_lua_instance(
         {
             move |lua, point_val: Value| {
                 // try to parse the entity
-                let point_result = vec2_from_lua_value(&point_val);
+                let point_result = finite_vec2_from_lua_value(&point_val);
                 if let Err(msg) = point_result {
                     return Err(mlua::Error::RuntimeError(msg));
                 }

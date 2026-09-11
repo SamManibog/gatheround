@@ -8,7 +8,7 @@ use crate::{
         DenseComponentManager, DenseSet, EntityTrait, NamedEntityManager, ResourceManager,
         SparseSet,
     },
-    geometry::{self, CollisionShape, IConvexShape, IRect, IVec2, OrdF32, RigidTransform},
+    geometry::{self, CollisionShape, IConvexShape, IRect, IVec2, NumericF32, RigidTransform},
     intermediate_representations::{
         CollisionShapeIR, EntityIdentifier, PieceColliderIR, PieceIR, PileIR, VisualInfo,
     },
@@ -1178,7 +1178,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F>
         contained.sort_unstable_by_key(|p| {
             let offset = self.pile_manager.get_snap_offset(*p).unwrap();
             let pile_position = self.get_entity_global_transform(*p).position.add(offset);
-            OrdF32::new(pile_position.distance_to(position))
+            NumericF32::new(pile_position.distance_to(position))
         });
 
         contained

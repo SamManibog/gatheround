@@ -4,10 +4,9 @@ use crate::{
     color::{IColor, color_from_lua_value},
     ecs::EntityTrait,
     geometry::{
-        CollisionShape, IConvexShape, IRect, IVec2, RigidTransform, rect_from_lua_table,
-        vec2_from_lua_table, vec2_from_lua_value,
+        CollisionShape, IConvexShape, IRect, IVec2, RigidTransform, finite_vec2_from_lua_table, finite_vec2_from_lua_value, valid_finite_rect_from_lua_table
     },
-    lua::{FromLuaTable, FromLuaValue, vector_from_lua_value},
+    lua::{FromLuaTable, FromLuaValue, finite_f32_from_lua_value, vector_from_lua_value},
     resources::CollisionShapeEntity,
 };
 
@@ -21,22 +20,29 @@ pub struct ImageTransform<V: IVec2> {
 
 impl<V: IVec2> FromLuaTable for ImageTransform<V> {
     fn try_from_lua_table(table: &Table) -> Result<Self, String> {
-        let position = if let Ok(vec) = vec2_from_lua_table(table) {
+        let position = if let Ok(vec) = finite_vec2_from_lua_table(table) {
             vec
         } else if let Ok(position_table) = table.raw_get::<Table>("pos")
-            && let Ok(vec) = vec2_from_lua_table(&position_table)
+            && let Ok(vec) = finite_vec2_from_lua_table(&position_table)
         {
             vec
         } else {
             return Err("Missing pos field.".to_string());
         };
 
-        let scale = match table.raw_get::<f64>("scale") {
-            Ok(value) => value,
-            Err(_) => {
-                return Err("Invalid scale field.".to_string());
+        let scale = match table.raw_get::<Value>("scale") {
+            Ok(value) => {
+                if value.is_nil() {
+                    1.0
+                } else {
+                    match finite_f32_from_lua_value(&value) {
+                        Ok(v) => v,
+                        Err(msg) => return Err(format!("Invalid scale field: {msg}")),
+                    }
+                }
             }
-        } as f32;
+            Err(msg) => return Err(format!("Invalid scale field: {msg}")),
+        };
 
         Ok(Self { position, scale })
     }
@@ -201,10 +207,10 @@ pub struct TextboxInfo<C: IColor, R: IRect> {
 
 impl<C: IColor, R: IRect> FromLuaTable for TextboxInfo<C, R> {
     fn try_from_lua_table(table: &Table) -> Result<Self, String> {
-        let rect = if let Ok(r) = rect_from_lua_table(table) {
+        let rect = if let Ok(r) = valid_finite_rect_from_lua_table(table) {
             r
         } else if let Ok(rect_table) = table.raw_get::<Table>("rect")
-            && let Ok(r) = rect_from_lua_table(&rect_table)
+            && let Ok(r) = valid_finite_rect_from_lua_table(&rect_table)
         {
             r
         } else {
@@ -246,11 +252,11 @@ impl<C: IColor, R: IRect> FromLuaTable for TextboxInfo<C, R> {
 
         let spacing = match table.raw_get::<mlua::Value>("spacing") {
             Ok(mlua::Value::Nil) => None,
-            Ok(mlua::Value::Number(x)) => Some(x.max(1.0) as f32),
-            Ok(mlua::Value::Integer(x)) => Some(x.max(1) as f32),
-            Err(_) | Ok(_) => {
-                return Err(format!("Invalid spacing field, must be nil or numeric."));
-            }
+            Ok(val) => match finite_f32_from_lua_value(&val) {
+                Ok(v) => Some(v),
+                Err(msg) => return Err(format!("Invalid spacing field: {msg}")),
+            },
+            Err(msg) => return Err(format!("Invalid spacing field: {msg}")),
         };
 
         let font = if let Ok(t) = table.raw_get::<String>("font") {
@@ -417,10 +423,10 @@ impl<C: IColor, R: IRect, V: IVec2> PatternInfo<C, R, V> {
 
 impl<C: IColor, R: IRect, V: IVec2> FromLuaTable for PatternInfo<C, R, V> {
     fn try_from_lua_table(table: &Table) -> Result<Self, String> {
-        let rect = if let Ok(r) = rect_from_lua_table(table) {
+        let rect = if let Ok(r) = valid_finite_rect_from_lua_table(table) {
             r
         } else if let Ok(rect_table) = table.raw_get::<Table>("rect")
-            && let Ok(r) = rect_from_lua_table(&rect_table)
+            && let Ok(r) = valid_finite_rect_from_lua_table(&rect_table)
         {
             r
         } else {
@@ -436,27 +442,51 @@ impl<C: IColor, R: IRect, V: IVec2> FromLuaTable for PatternInfo<C, R, V> {
             return Err("Invalid pattern field.".to_string());
         };
 
-        let weight = if let Ok(val) = table.raw_get::<Option<f32>>("weight") {
-            val.unwrap_or(pattern.default_weight())
-        } else {
-            return Err("Invalid weight field.".to_string());
+        let weight = match table.raw_get::<Value>("weight") {
+            Ok(value) => {
+                if value.is_nil() {
+                    pattern.default_weight()
+                } else {
+                    match finite_f32_from_lua_value(&value) {
+                        Ok(v) => v,
+                        Err(msg) => return Err(format!("Invalid weight field: {msg}")),
+                    }
+                }
+            }
+            Err(msg) => return Err(format!("Invalid weight field: {msg}")),
         };
 
-        let spacing = if let Ok(val) = table.raw_get::<Option<f32>>("spacing") {
-            val.unwrap_or(pattern.default_spacing())
-        } else {
-            return Err("Invalid spacing field.".to_string());
+        let spacing = match table.raw_get::<Value>("spacing") {
+            Ok(value) => {
+                if value.is_nil() {
+                    pattern.default_spacing()
+                } else {
+                    match finite_f32_from_lua_value(&value) {
+                        Ok(v) => v,
+                        Err(msg) => return Err(format!("Invalid spacing field: {msg}")),
+                    }
+                }
+            }
+            Err(msg) => return Err(format!("Invalid spacing field: {msg}")),
         };
 
-        let angle = if let Ok(val) = table.raw_get::<Option<f32>>("angle") {
-            val.unwrap_or(pattern.default_angle())
-        } else {
-            return Err("Invalid angle field.".to_string());
+        let angle = match table.raw_get::<Value>("angle") {
+            Ok(value) => {
+                if value.is_nil() {
+                    pattern.default_angle()
+                } else {
+                    match finite_f32_from_lua_value(&value) {
+                        Ok(v) => v,
+                        Err(msg) => return Err(format!("Invalid angle field: {msg}")),
+                    }
+                }
+            }
+            Err(msg) => return Err(format!("Invalid angle field: {msg}")),
         };
 
         let offset = if let Ok(offset_table_opt) = table.raw_get::<Option<Table>>("offset") {
             if let Some(offset_table) = offset_table_opt {
-                match vec2_from_lua_table(&offset_table) {
+                match finite_vec2_from_lua_table(&offset_table) {
                     Ok(val) => val,
                     Err(msg) => return Err(format!("Invalid offset field: {msg}")),
                 }
@@ -535,13 +565,6 @@ impl<C: IColor, R: IRect, V: IVec2> FromLuaTable for VisualComponent<C, R, V> {
             Err(_) => Err(format!("Component has invalid type.")),
         }
     }
-}
-
-/// the render mode for the visual
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RenderMode {
-    Nearest,
-    Bilinear,
 }
 
 /// information for a visual element on a piece face
@@ -771,7 +794,7 @@ impl<V: IVec2> FromLuaTable for PileIR<V> {
             if let Value::Nil = val {
                 V::from_xy(0.0, 0.0)
             } else {
-                match vec2_from_lua_value(&val) {
+                match finite_vec2_from_lua_value(&val) {
                     Ok(t) => t,
                     Err(msg) => return Err(format!("Invalid snap_offset field: {msg}")),
                 }

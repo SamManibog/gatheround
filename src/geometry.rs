@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 use mlua::{Lua, Table, Value};
 
-use crate::lua::{FromLuaTable, FromLuaValue};
+use crate::lua::{FromLuaTable, FromLuaValue, finite_f32_from_lua_value};
 
 pub const GJK_MAX_ITERATIONS: u32 = 64;
 
@@ -26,17 +26,17 @@ impl_as_f32!(i8, u8, i16, u16, i32, u32, i64, u64, isize, usize, f64);
 /// only supporting comparison operations
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 #[repr(transparent)]
-pub struct OrdF32(f32);
+pub struct NumericF32(f32);
 
-impl Eq for OrdF32 {}
+impl Eq for NumericF32 {}
 
-impl Ord for OrdF32 {
+impl Ord for NumericF32 {
     fn cmp(&self, other: &Self) -> Ordering {
         self.0.partial_cmp(&other.0).unwrap()
     }
 }
 
-impl OrdF32 {
+impl NumericF32 {
     /// creates a new totally ordered f32, panicing if a NaN value is passed
     pub fn new(val: f32) -> Self {
         assert!(
@@ -48,32 +48,32 @@ impl OrdF32 {
 }
 
 /// attempt to instance from a lua value
-pub fn vec2_from_lua_value<V: IVec2>(value: &mlua::Value) -> Result<V, String> {
+pub fn finite_vec2_from_lua_value<V: IVec2>(value: &mlua::Value) -> Result<V, String> {
     match value {
-        Value::Table(table) => vec2_from_lua_table(&table),
+        Value::Table(table) => finite_vec2_from_lua_table(&table),
         _ => Err(format!("non-table value.")),
     }
 }
 
 /// attempt to instance from a lua table
-pub fn vec2_from_lua_table<V: IVec2>(table: &Table) -> Result<V, String> {
-    let x = match table.raw_get::<f64>("x") {
-        Ok(value) => value,
-        Err(_) => match table.raw_get::<f64>(1) {
-            Ok(value) => value,
-            Err(_) => return Err("Invalid x field.".to_string()),
+pub fn finite_vec2_from_lua_table<V: IVec2>(table: &Table) -> Result<V, String> {
+    let x = match table.raw_get::<Value>("x") {
+        Ok(value) => match finite_f32_from_lua_value(&value) {
+            Ok(v) => v,
+            Err(msg) => return Err(format!("Invalid x field: {msg}")),
         },
+        Err(msg) => return Err(format!("Invalid x field: {msg}")),
     };
 
-    let y = match table.raw_get::<f64>("y") {
-        Ok(value) => value,
-        Err(_) => match table.raw_get::<f64>(2) {
-            Ok(value) => value,
-            Err(_) => return Err("Invalid y field.".to_string()),
+    let y = match table.raw_get::<Value>("y") {
+        Ok(value) => match finite_f32_from_lua_value(&value) {
+            Ok(v) => v,
+            Err(msg) => return Err(format!("Invalid y field: {msg}")),
         },
+        Err(msg) => return Err(format!("Invalid y field: {msg}")),
     };
 
-    Ok(V::from_xy(x as f32, y as f32))
+    Ok(V::from_xy(x, y))
 }
 
 /// trait representing 2d vectors
@@ -239,22 +239,34 @@ impl IConvexShape for (f32, f32) {
 }
 
 /// attempt to instance from a lua table
-pub fn rect_from_lua_table<R: IRect>(table: &Table) -> Result<R, String> {
-    let position = vec2_from_lua_table::<(f32, f32)>(table)?;
+/// x, y, width, and height must be finite
+/// width and height must be non-negative
+pub fn valid_finite_rect_from_lua_table<R: IRect>(table: &Table) -> Result<R, String> {
+    let position = finite_vec2_from_lua_table::<(f32, f32)>(table)?;
 
-    let width = match table.raw_get::<f64>("width") {
-        Ok(value) => value,
-        Err(_) => {
-            return Err("Invalid width field.".to_string());
-        }
+    let width = match table.raw_get::<Value>("width") {
+        Ok(value) => match finite_f32_from_lua_value(&value) {
+            Ok(v) => v,
+            Err(msg) => return Err(format!("Invalid width field: {msg}")),
+        },
+        Err(msg) => return Err(format!("Invalid width field: {msg}")),
     };
 
-    let height = match table.raw_get::<f64>("height") {
-        Ok(value) => value,
-        Err(_) => {
-            return Err("Invalid height field.".to_string());
-        }
+    if width < 0.0 {
+        return Err(format!("Invalid width field: got negative value."));
+    }
+
+    let height = match table.raw_get::<Value>("height") {
+        Ok(value) => match finite_f32_from_lua_value(&value) {
+            Ok(v) => v,
+            Err(msg) => return Err(format!("Invalid height field: {msg}")),
+        },
+        Err(msg) => return Err(format!("Invalid height field: {msg}")),
     };
+
+    if height < 0.0 {
+        return Err(format!("Invalid height field: got negative value."));
+    }
 
     Ok(R::from_position_dimension(
         position,
@@ -797,20 +809,25 @@ impl<V: IVec2> RigidTransform<V> {
         table.raw_set("angle", self.angle)?;
         Ok(table)
     }
-
 }
 
 impl<V: IVec2> FromLuaTable for RigidTransform<V> {
     fn try_from_lua_table(table: &Table) -> Result<Self, String> {
-        let position = vec2_from_lua_table(table)?;
+        let position = finite_vec2_from_lua_table(table)?;
 
-        let angle = match table.raw_get::<Option<f64>>("angle") {
-            Ok(value) => value,
-            Err(_) => {
-                return Err("Invalid angle field.".to_string());
+        let angle = match table.raw_get::<Value>("angle") {
+            Ok(value) => {
+                if value.is_nil() {
+                    0.0
+                } else {
+                    match finite_f32_from_lua_value(&value) {
+                        Ok(v) => v,
+                        Err(msg) => return Err(format!("Invalid angle field: {msg}")),
+                    }
+                }
             }
-        }
-        .unwrap_or(0.0) as f32;
+            Err(msg) => return Err(format!("Invalid angle field: {msg}")),
+        };
 
         Ok(Self { position, angle })
     }
@@ -1153,7 +1170,7 @@ impl<V: IVec2> FromLuaTable for ConvexHull<V> {
         let mut points = Vec::new();
         for (i, point_opt) in table.sequence_values::<Value>().enumerate() {
             if let Ok(point) = point_opt {
-                match vec2_from_lua_value(&point) {
+                match finite_vec2_from_lua_value(&point) {
                     Ok(p) => points.push(p),
                     Err(msg) => return Err(format!("Invalid point at index {}: {msg}", i + 1)),
                 }
