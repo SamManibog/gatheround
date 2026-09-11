@@ -1750,6 +1750,13 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F>
 
         // now grab the pile
         self.player_manager.set_held_item(player, Some(pile));
+
+        // set pile position
+        let transform = RigidTransform {
+            position: self.player_manager.get_position(player).unwrap(),
+            angle: self.entity_transforms.get(pile).unwrap().angle,
+        };
+        self.set_piece_transform_unchecked(pile, transform);
     }
 
     /// makes the player grab a piece
@@ -1764,6 +1771,13 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F>
         // update the piece to a grabbed state
         self.quadtree.remove(piece);
         self.player_manager.set_held_item(player, Some(piece));
+
+        // set set piece position
+        let transform = RigidTransform {
+            position: self.player_manager.get_position(player).unwrap(),
+            angle: self.entity_transforms.get(piece).unwrap().angle,
+        };
+        self.set_piece_transform_unchecked(piece, transform);
     }
 
     /// makes the player drop is held piece or pile

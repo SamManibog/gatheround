@@ -187,6 +187,7 @@ return function(inputs)
             else
                 local top_item = get_top_piece_on_point(get_player_position(player))
                 set_held_item(player, top_item)
+                set_snap_target(player, get_snap_piles(player)[1])
             end
         end
     end
