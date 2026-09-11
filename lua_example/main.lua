@@ -160,3 +160,34 @@ for r = 1, #rows do
     end
 end
 
+-- Function called after a player moves 
+-- The argument passed is the player that was moved
+function playerMoved(player)
+    local snaps = get_snap_piles(player)
+    set_snap_target(player, snaps[1])
+end
+
+return function(inputs)
+    for _, input in ipairs(inputs) do
+        local player = input.player
+
+        move_player(player, input.trackpad_delta)
+        set_snap_target(player, get_snap_piles(player)[1])
+
+        if input.trackpad_pressed then
+            if is_holding(player) then
+                local held_item = get_held_item(player)
+                local overlaps = get_item_overlaps(held_item);
+                for _, layer in ipairs(overlaps.overlapping_layers) do
+                    if layer ~= "grab" then
+                        return
+                    end
+                end
+                set_held_item(player, nil)
+            else
+                local top_item = get_top_piece_on_point(get_player_position(player))
+                set_held_item(player, top_item)
+            end
+        end
+    end
+end

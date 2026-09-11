@@ -19,10 +19,6 @@ use crate::{
     }, intermediate_representations::{EntityIdentifier, PieceIR, PileIR, VisualInfo}, raylib_integrations::RaylibTextureCompiler, resources::PlayerColor
 };
 
-const MAIN_LUA_FILE: &str = "main.lua";
-
-const DEFAULT_LUA_SCRIPT: &str = include_str!("defaults.lua");
-
 /// for structs that can be created based off of a lua table
 pub trait FromLuaTable: Sized {
     fn try_from_lua_table(table: &Table) -> Result<Self, String>;
@@ -365,6 +361,42 @@ pub fn get_game_lua_instance(
 
                 match board.get_player_position(player) {
                     Ok(p) => Ok(p.into_lua_table(lua)),
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
+        "move_player",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |_, (player_val, delta_val): (Value, Table)| {
+                // try to parse the entity
+                let player_result = PlayerColor::try_from_lua_value(&player_val);
+                if let Err(msg) = player_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let player = player_result.unwrap();
+
+                // try to parse the lua table
+                let delta_result = finite_vec2_from_lua_table(&delta_val);
+                if let Err(msg) = delta_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let delta = delta_result.unwrap();
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.move_player(player, delta) {
+                    Ok(()) => Ok(()),
+
                     Err(msg) => Err(mlua::Error::RuntimeError(msg)),
                 }
             }
@@ -1607,19 +1639,10 @@ pub fn get_game_lua_instance(
         }
     );
 
-    // load default functions
-    match lua.load(DEFAULT_LUA_SCRIPT).exec() {
+    // load default update function to prevent immediate crash
+    match lua.load("function update(_) end").exec() {
         Ok(()) => (),
         Err(msg) => panic!("Unable to load default functions: {msg}"),
-    }
-
-    // load user script
-    let main_path = project_path.join(MAIN_LUA_FILE);
-    let script_content = std::fs::read_to_string(&main_path)
-        .expect(&format!("Unable to read lua file '{:#?}'.", &main_path));
-    let main_chunk = lua.load(script_content);
-    if let Err(msg) = main_chunk.exec() {
-        panic!("Failed to run lua file '{:#?}':\n{msg}", &main_path,);
     }
 
     lua

@@ -4,6 +4,8 @@ pub mod board;
 pub mod resources;
 pub mod renderer;
 pub mod lua;
+pub mod input;
+pub mod server;
 
 // frontend integrations
 pub mod raylib_integrations;

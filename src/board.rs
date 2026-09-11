@@ -1796,6 +1796,15 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F>
         Ok(self.player_manager.get_position(player).unwrap())
     }
 
+    /// moves the player by the given delta
+    /// fails if the player does not exist
+    pub fn move_player(&mut self, player: PlayerColor, delta: V) -> Result<(), String> {
+        self.validate_player(player)?;
+
+        let current_position = self.player_manager.get_position(player).unwrap();
+        self.set_player_position(player, current_position.add(delta))
+    }
+
     /// sets the position of the player
     /// fails if the player does not exist
     pub fn set_player_position(&mut self, player: PlayerColor, position: V) -> Result<(), String> {

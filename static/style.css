@@ -1,0 +1,35 @@
+:root {
+    color-scheme: light dark;
+}
+
+* {
+  -webkit-touch-callout: none; /* iOS Safari */
+  -webkit-user-select: none;   /* Safari */
+  -khtml-user-select: none;     /* Konqueror HTML */
+  -moz-user-select: none;      /* Old versions of Firefox */
+  -ms-user-select: none;       /* Internet Explorer/Edge */
+  user-select: none
+}
+
+html, body {
+    background-color: Canvas;
+    margin: 0;
+    height: 100%;
+    width: 100%;
+    touch-action: none;
+    overflow: hidden; /* Disables both horizontal and vertical scrolling */
+}
+
+.classic-layout {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.tracking-area {
+    flex: 1;
+
+    background-color: #a0a0a0;
+    border: 2px solid #c0c0c0;
+    cursor: crosshair;
+}

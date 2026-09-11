@@ -21,6 +21,7 @@ use crate::{
     board::BoardManager,
     color::IColor,
     geometry::{ConvexHull, IConvexShape, IRect, IVec2},
+    input::InputState,
     intermediate_representations::{
         Alignment, ImageTransform, PatternInfo, PatternType, TextboxInfo, VisualComponent,
         VisualInfo,
@@ -28,9 +29,11 @@ use crate::{
     lua::get_game_lua_instance,
     renderer::{GlobalAssets, IRenderer, ITextureCompiler},
     resources::{PlayerColor, TextureInfo, VisualComponentProvider},
+    server::GameServer,
 };
 
 const FRAME_RATE: u32 = 60;
+const MAIN_LUA_FILE: &str = "main.lua";
 
 impl IVec2 for Vector2 {
     fn from_xy(x: f32, y: f32) -> Self {
@@ -1320,6 +1323,10 @@ impl TextCommandBuffer {
 
         // handle the enter key
         if rl.is_key_pressed(KeyboardKey::KEY_ENTER) {
+            if self.command.is_empty() {
+                return None;
+            }
+
             self.blink_frame = 0;
             // adjust history
             if self.history.len() >= Self::MAX_HISTORY {
@@ -1398,7 +1405,7 @@ impl TextCommandBuffer {
 }
 
 /// runs a game editor from the given project path
-pub fn run_game(project_path: &Path) {
+pub async fn run_game(project_path: &Path) {
     let test_player = PlayerColor::Lime;
 
     // initialize game resources
@@ -1409,6 +1416,10 @@ pub fn run_game(project_path: &Path) {
         );
     let _ = board.add_player(test_player, "Player".to_string());
     let board_cell = Rc::new(RefCell::new(board));
+
+    // initialize input state
+    let mut input_state = InputState::default();
+    input_state.add_player(test_player);
 
     // initialize raylib
     callbacks::set_trace_log_callback(|level, msg| match level {
@@ -1447,6 +1458,24 @@ pub fn run_game(project_path: &Path) {
     // get and run init function
     let lua = get_game_lua_instance(&project_path, &board_cell, &rl_cell, &thread_cell);
 
+    // load user script
+    let main_path = project_path.join(MAIN_LUA_FILE);
+    let script_content = std::fs::read_to_string(&main_path)
+        .expect(&format!("Unable to read lua file '{:#?}'.", &main_path));
+    let main_chunk = lua.load(script_content);
+
+    let lua_update_callback = match main_chunk.eval::<mlua::Function>() {
+        Ok(f) => f,
+        Err(msg) => panic!(
+            "Failed to run lua file '{:#?}':\n{}",
+            &main_path,
+            msg.to_string()
+        ),
+    };
+
+    // initialize server
+    let server = GameServer::run_new().await;
+
     // run main loop
     loop {
         // detect window close
@@ -1454,71 +1483,12 @@ pub fn run_game(project_path: &Path) {
             return;
         }
 
-        let padding = {
-            let rl = rl_cell.borrow();
-            let board = board_cell.borrow();
-            Vector2::from_xy(
-                rl.get_render_width() as f32 - board.dimensions().x(),
-                rl.get_render_height() as f32 - board.dimensions().y(),
-            )
-            .scaled(0.5)
-        };
-
-        // update hand position
-        // randomize hand update order for "fair" movement
+        // run update cycle
         {
-            let rl = rl_cell.borrow_mut();
-            if rl.is_mouse_button_pressed(raylib::ffi::MouseButton::MOUSE_BUTTON_LEFT) {
-                drop(rl);
-
-                let grab_attempted_fn: mlua::Function = lua
-                    .globals()
-                    .raw_get("grabAttempted")
-                    .expect("grabAttempted has been overwritten to a non-function value.");
-                let name_string = lua
-                    .create_string(test_player.name())
-                    .expect("unable to create player name string");
-
-                let _: MultiValue = grab_attempted_fn
-                    .call(name_string)
-                    .expect("grabAttempted has been overwritten with an invalid function.");
-            } else if rl.is_mouse_button_pressed(raylib::ffi::MouseButton::MOUSE_BUTTON_RIGHT) {
-                drop(rl);
-
-                let drop_attempted_fn: mlua::Function = lua
-                    .globals()
-                    .raw_get("dropAttempted")
-                    .expect("dropAttempted has been overwritten to a non-function value.");
-                let name_string = lua
-                    .create_string(test_player.name())
-                    .expect("unable to create player name string");
-
-                let _: MultiValue = drop_attempted_fn
-                    .call(name_string)
-                    .expect("dropAttempted has been overwritten with an invalid function.");
+            let update_table = input_state.update(&lua, server.poll_inputs());
+            if let Err(err) = lua_update_callback.call::<MultiValue>(update_table) {
+                eprintln!("Got runtime error: {err}");
             }
-        }
-
-        // update positions
-        {
-            let rl = rl_cell.borrow_mut();
-            let mut board = board_cell.borrow_mut();
-            board
-                .set_player_position(test_player, rl.get_mouse_position().sub(padding))
-                .expect("player should be valid");
-        }
-        {
-            let player_moved_fn: mlua::Function = lua
-                .globals()
-                .raw_get("playerMoved")
-                .expect("playerMoved has been overwritten to a non-function value.");
-            let name_string = lua
-                .create_string(test_player.name())
-                .expect("unable to create player name string");
-
-            let _: MultiValue = player_moved_fn
-                .call(name_string)
-                .expect("playerMoved has been overwritten with an invalid function.");
         }
 
         // update commands
@@ -1530,7 +1500,7 @@ pub fn run_game(project_path: &Path) {
                 match lua.load(cmd).eval::<mlua::MultiValue>() {
                     Ok(v) => println!("GOTVALUE FROM COMMAND!: {:?}", v),
                     Err(e) => {
-                        println!("GOT ERROR FROM COMMAND! NOT YET SURE WHAT TO DO WITH IT:\n{e}")
+                        eprintln!("GOT ERROR FROM COMMAND! NOT YET SURE WHAT TO DO WITH IT:\n{e}")
                     }
                 }
             }
@@ -1540,15 +1510,25 @@ pub fn run_game(project_path: &Path) {
         {
             let mut rl = rl_cell.borrow_mut();
             let thread = thread_cell.borrow();
+            let board = board_cell.borrow();
+
             let mut rl_renderer = RaylibRenderer {
                 rl: &mut rl,
                 thread: &thread,
                 draw_layer_pool: &mut draw_layer_pool,
             };
-            rl_renderer.draw_board(&board_cell.borrow(), &global_assets, &mut output_texture);
+            rl_renderer.draw_board(&board, &global_assets, &mut output_texture);
+
+            let padding = {
+                Vector2::from_xy(
+                    rl.get_render_width() as f32 - board.dimensions().x(),
+                    rl.get_render_height() as f32 - board.dimensions().y(),
+                )
+                .scaled(0.5)
+            };
 
             rl.draw(&thread, |mut painter| {
-                painter.clear_background(board_cell.borrow().color);
+                painter.clear_background(board.color);
 
                 let src_rect =
                     Rectangle::from_position_dimension((0.0, 0.0), board_dimensions.neg_y());
