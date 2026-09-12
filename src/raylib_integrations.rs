@@ -28,7 +28,7 @@ use crate::{
     },
     lua::get_game_lua_instance,
     renderer::{GlobalAssets, IRenderer, ITextureCompiler},
-    resources::{PlayerColor, TextureInfo, VisualComponentProvider},
+    resources::{TextureInfo, VisualComponentProvider},
     server::GameServer,
 };
 
@@ -1406,20 +1406,16 @@ impl TextCommandBuffer {
 
 /// runs a game editor from the given project path
 pub async fn run_game(project_path: &Path) {
-    let test_player = PlayerColor::Lime;
-
     // initialize game resources
-    let board_dimensions = Vector2::from_xy(1920.0, 1080.0);
-    let mut board =
+    let board_dimensions = Vector2::from_xy(1920.0, 1200.0);
+    let board =
         BoardManager::<Color, Rectangle, Vector2, ConvexHull<Vector2>, RenderTexture2D, Font>::new(
             board_dimensions,
         );
-    let _ = board.add_player(test_player, "Player".to_string());
     let board_cell = Rc::new(RefCell::new(board));
 
     // initialize input state
     let mut input_state = InputState::default();
-    input_state.add_player(test_player);
 
     // initialize raylib
     callbacks::set_trace_log_callback(|level, msg| match level {
@@ -1434,9 +1430,13 @@ pub async fn run_game(project_path: &Path) {
         .vsync()
         .title("Gatheround Board Game Engine")
         //.fullscreen()
-        .size(board_dimensions.x() as i32, board_dimensions.y() as i32)
+        .size(
+            board_dimensions.x() as i32 - 100,
+            board_dimensions.y() as i32 - 100,
+        )
         .resizable()
         .build();
+    rl.hide_cursor();
     rl.set_exit_key(None);
     rl.set_target_fps(FRAME_RATE);
     let mut output_texture = rl
@@ -1481,6 +1481,17 @@ pub async fn run_game(project_path: &Path) {
         // detect window close
         if rl_cell.borrow_mut().window_should_close() {
             return;
+        }
+
+        // poll for new players
+        {
+            for player in server.poll_new_players() {
+                println!("new join");
+                if let Err(err) = board_cell.borrow_mut().add_player(player) {
+                    eprintln!("{err}");
+                }
+                input_state.add_player(player);
+            }
         }
 
         // run update cycle

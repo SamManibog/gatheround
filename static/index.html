@@ -4,12 +4,30 @@
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Gatheround</title>
-        <link rel="stylesheet" type="text/css" href="style.css">
-        <script src="logic.js" defer></script>
+        <link rel="stylesheet" type="text/css" href="/gatheround/style.css">
+        <script src="/gatheround/logic.js" defer></script>
     </head>
     <body>
-        <div class="classic-layout">
-            <div id="inputArea" class="tracking-area"> </div>
+        <div id="joinPage" class="maximize hidden">
+            <p>Pick a Color</p>
+            <div class="color-selector">
+                <button id="playerRed" class="color-selector-button player-red" type="button" value="red"></button>
+                <button id="playerOrange" class="color-selector-button player-orange" type="button" value="orange"></button>
+                <button id="playerYellow" class="color-selector-button player-yellow" type="button" value="yellow"></button>
+                <button id="playerLime" class="color-selector-button player-lime" type="button" value="lime"></button>
+                <button id="playerGreen" class="color-selector-button player-green" type="button" value="green"></button>
+                <button id="playerCyan" class="color-selector-button player-cyan" type="button" value="cyan"></button>
+                <button id="playerBlue" class="color-selector-button player-blue" type="button" value="blue"></button>
+                <button id="playerPurple" class="color-selector-button player-purple" type="button" value="purple"></button>
+                <button id="playerPink" class="color-selector-button player-pink" type="button" value="pink"></button>
+                <button id="playerBlack" class="color-selector-button player-black" type="button" value="black"></button>
+                <button id="playerWhite" class="color-selector-button player-white" type="button" value="white"></button>
+                <button id="playerBrown" class="color-selector-button player-brown" type="button" value="brown"></button>
+            </div>
+        </div>
+
+        <div id="inputPage" class="maximize hidden">
+            <div id="trackpad" class="tracking-area"> </div>
         </div>
     </body>
 </html>

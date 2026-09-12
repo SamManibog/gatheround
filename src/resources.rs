@@ -706,6 +706,25 @@ impl PlayerColor {
     }
 }
 
+impl TryFrom<&str> for PlayerColor {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match Self::from_name(&value) {
+            Some(s) => Ok(s),
+            None => Err(format!("Unrecognized color: {value}"))
+        }
+    }
+}
+
+impl TryFrom<&String> for PlayerColor {
+    type Error = String;
+
+    fn try_from(value: &String) -> Result<Self, Self::Error> {
+        Self::try_from(value.as_str())
+    }
+}
+
 impl Display for PlayerColor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name())
@@ -825,11 +844,8 @@ impl SnapTargetManager {
 
 #[derive(Debug)]
 pub struct PlayerManager<V: IVec2> {
-    /// player colors mapped to their screen names
-    players: DenseComponentManager<PlayerColor, String>,
-
-    /// screen names mapped to their player colors
-    colors: [String; PlayerColor::COLOR_COUNT],
+    /// player colors in use
+    players: DenseSet<PlayerColor>,
 
     /// positions of player's hands
     positions: DenseComponentManager<PlayerColor, V>,
@@ -844,8 +860,7 @@ pub struct PlayerManager<V: IVec2> {
 impl<V: IVec2> Default for PlayerManager<V> {
     fn default() -> Self {
         Self {
-            players: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
-            colors: [const { String::new() }; PlayerColor::COLOR_COUNT],
+            players: DenseSet::with_capacity(PlayerColor::COLOR_COUNT),
             positions: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
             held_items: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
             item_holders: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
@@ -854,34 +869,6 @@ impl<V: IVec2> Default for PlayerManager<V> {
 }
 
 impl<V: IVec2> PlayerManager<V> {
-    pub const NAME_CHAR_LIMIT: usize = 12;
-
-    /// gets the regex for valid names
-    /// has the following requirements:
-    ///  - 1-12 characters
-    ///  - only graphic characters
-    pub fn is_name_valid(name: &str) -> Result<(), String> {
-        if name.is_empty() {
-            return Err(format!("Player name must not be empty."));
-        }
-
-        let mut len = 0;
-        let mut chars = name.chars();
-        while len <= Self::NAME_CHAR_LIMIT {
-            len += 1;
-            if let Some(ch) = chars.next() {
-                if !Self::is_name_char_valid(ch) {
-                    return Err(format!(
-                        "Player names must only contain graphic characters."
-                    ));
-                }
-            } else {
-                return Ok(());
-            }
-        }
-        Err(format!("Player names must not exceed 12 characters."))
-    }
-
     /// returns an iterator over all held pieces
     pub fn held_item_iter(&self) -> impl Iterator<Item = PieceEntity> {
         self.held_items.component_iter().cloned()
@@ -892,39 +879,15 @@ impl<V: IVec2> PlayerManager<V> {
         self.positions.pairs_iter().map(|(p, t)| (p, *t))
     }
 
-    /// checks if a character is valid for use in a name
-    /// must be a graphic character
-    pub fn is_name_char_valid(ch: char) -> bool {
-        ch.is_ascii_graphic()
-    }
-
     /// creates a new player with the given name and color
-    pub fn new_player(&mut self, color: PlayerColor, name: String) -> Result<(), String> {
-        Self::is_name_valid(&name)?;
+    pub fn new_player(&mut self, color: PlayerColor) -> Result<(), String> {
         if self.players.contains(color) {
             return Err(format!("Player color {color} is already taken."));
         }
-        if self.colors.contains(&name) {
-            return Err(format!("Player name '{name}' is already taken."));
-        }
 
-        self.players.insert(color, name.clone());
-        self.colors[color.id() as usize] = name;
+        self.players.insert(color);
         self.positions.insert(color, V::from_xy(0.0, 0.0));
         Ok(())
-    }
-
-    /// gets a player color by name
-    pub fn color_of(&self, name: &String) -> Option<PlayerColor> {
-        self.colors
-            .iter()
-            .position(|n| n == name)
-            .map(|id| PlayerColor::from_id(id))
-    }
-
-    /// gets the name of a player by color
-    pub fn name_of(&self, color: PlayerColor) -> Option<&String> {
-        self.players.get(color)
     }
 
     /// checks if a player is contained
@@ -934,7 +897,6 @@ impl<V: IVec2> PlayerManager<V> {
 
     /// removes a player, does nothing if the player does not exist
     pub fn remove_player(&mut self, player: PlayerColor) {
-        self.colors[player.id() as usize] = String::new();
         self.players.remove(player);
         self.positions.remove(player);
     }
@@ -991,9 +953,9 @@ impl<V: IVec2> PlayerManager<V> {
         }
     }
 
-    /// returns an iterator over player colors and their names
-    pub fn iter(&self) -> impl Iterator<Item = (PlayerColor, &String)> {
-        self.players.pairs_iter()
+    /// returns an iterator over player colors in use
+    pub fn iter(&self) -> impl Iterator<Item = PlayerColor> {
+        self.players.iter()
     }
 }
 

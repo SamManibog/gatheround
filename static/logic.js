@@ -1,9 +1,18 @@
-const area = document.getElementById('inputArea');
+// -----------------------------------------------------------------------------------------------------------
+// MAIN PAGE ELEMENTS
+// -----------------------------------------------------------------------------------------------------------
+const joinPage = document.getElementById('joinPage');
+const inputPage = document.getElementById('inputPage');
+
+// -----------------------------------------------------------------------------------------------------------
+// INPUT PAGE LOGIC
+// -----------------------------------------------------------------------------------------------------------
+const trackpadArea = document.getElementById('trackpad');
 
 const threshold = 10; // Pixels moved to count as a drag instead of a tap
 
 async function sendTrackpadDelta(x, y) {
-    const response = await fetch('/input', {
+    const response = await fetch('/gatheround/input', {
         method: "POST",
         headers: {
             "Content-Type": "application/json"
@@ -15,14 +24,13 @@ async function sendTrackpadDelta(x, y) {
         })
     });
 
-    // Check if the response status is OK (200-299)
     if (!response.ok) {
         console.error(`ERROR [${response.status}]: ${await response.text()}`);
     }
 }
 
 async function sendTrackpadPress() {
-    const response = await fetch('./input', {
+    const response = await fetch('/gatheround/input', {
         method: "POST",
         headers: {
             "Content-Type": "application/json"
@@ -32,7 +40,6 @@ async function sendTrackpadPress() {
         })
     });
 
-    // Check if the response status is OK (200-299)
     if (!response.ok) {
         console.error(`ERROR [${response.status}]: ${await response.text()}`);
     }
@@ -57,14 +64,15 @@ let accelCoef = 0.7;
 // acceleration exponent
 let accelExp = 1.2;
 
-area.addEventListener('pointerdown', (e) => {
+trackpadArea.addEventListener('pointerdown', (e) => {
     isTracking = true;
     startX = e.clientX;
     startY = e.clientY;
-    area.setPointerCapture(e.pointerId);
+    trackpadArea
+        .setPointerCapture(e.pointerId);
 });
 
-area.addEventListener('pointermove', (e) => {
+trackpadArea.addEventListener('pointermove', (e) => {
     if (!isTracking) return;
 
     let currentX = e.clientX;
@@ -97,7 +105,7 @@ area.addEventListener('pointermove', (e) => {
     }
 });
 
-area.addEventListener('pointerup', (e) => {
+trackpadArea.addEventListener('pointerup', (e) => {
     if (!isTracking) return;
 
     if (isDragging) {
@@ -109,4 +117,71 @@ area.addEventListener('pointerup', (e) => {
 
     isTracking = false;
     isDragging = false;
+});
+
+// -----------------------------------------------------------------------------------------------------------
+// JOIN PAGE LOGIC
+// -----------------------------------------------------------------------------------------------------------
+
+// handle color button logic
+let playerColor = null;
+let joinRequested = false;
+const colorButtons = document.querySelectorAll('.color-selector-button');
+async function handleColorButtonClick(event) {
+    if (joinRequested || playerColor != null) {
+        return;
+    }
+
+    const color = event.target.value;
+    console.log("Attempting join as ", color);
+
+    joinRequested = true;
+    const response = await fetch('/gatheround/get-session', {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            color: color,
+        })
+    });
+
+    if (!response.ok) {
+        console.error(`ERROR [${response.status}]: ${await response.text()}`);
+    } else {
+        playerColor = color;
+        console.log("Game joined successfully as ", playerColor);
+        joinPage.classList.add("hidden");
+        inputPage.classList.remove("hidden");
+    }
+    joinRequested = false;
+}
+colorButtons.forEach(button => {
+    button.addEventListener('click', handleColorButtonClick);
+});
+
+// -----------------------------------------------------------------------------------------------------------
+// Reconnection logic
+// -----------------------------------------------------------------------------------------------------------
+
+async function hasSession() {
+    const response = await fetch('/gatheround/has-session', {
+        method: "POST",
+    });
+
+    let text = await response.text();
+
+    if (!response.ok) {
+        console.error(`ERROR [${response.status}]: ${text}`);
+    }
+
+    return text == "true";
+}
+
+hasSession().then((result) => {
+    if (result) {
+        inputPage.classList.remove("hidden");
+    } else {
+        joinPage.classList.remove("hidden");
+    }
 });

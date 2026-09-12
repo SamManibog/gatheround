@@ -1,20 +1,34 @@
 set_background("#E8E3DE")
 
-local board_length = 1000
+local board_length = 1120
+local board_outline = 12
 local tile_length = board_length / 8
 
 create_texture("chess_board", {
-    type = "pattern",
-    pattern = "checkers",
-    rect = {
-        x = -0.5 * board_length,
-        y = -0.5 * board_length,
-        width = board_length,
-        height = board_length,
+    {
+        type = "pattern",
+        pattern = "solid",
+        rect = {
+            x = -0.5 * board_length - board_outline,
+            y = -0.5 * board_length - board_outline,
+            width = board_length + board_outline * 2.0,
+            height = board_length + board_outline * 2.0,
+        },
+        pattern_color = "#AA785A",
     },
-    pattern_color = "#ECE7E2",
-    background_color = "#AA785A",
-    weight = tile_length,
+    {
+        type = "pattern",
+        pattern = "checkers",
+        rect = {
+            x = -0.5 * board_length,
+            y = -0.5 * board_length,
+            width = board_length,
+            height = board_length,
+        },
+        pattern_color = "#ECE7E2",
+        background_color = "#AA785A",
+        weight = tile_length,
+    },
 })
 
 create_texture("red_square", {
@@ -38,10 +52,10 @@ create_texture("blue_king", {
         type = "pattern",
         pattern = "solid",
         rect = {
-            x = -60,
-            y = -60,
-            width = 120,
-            height = 120
+            x = -64,
+            y = -64,
+            width = 128,
+            height = 128
         },
         pattern_color = {
             r = 0,

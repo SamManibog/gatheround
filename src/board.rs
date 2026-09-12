@@ -15,9 +15,7 @@ use crate::{
     lua::FromLuaTable,
     renderer::{GlobalAssets, ITextureCompiler},
     resources::{
-        CollisionLayerEntity, CollisionLayerManager, CollisionShapeEntity, DrawLayerManager,
-        PieceCollider, PieceEntity, PileManager, PlayerColor, PlayerManager, QuadTreeManager,
-        SnapTargetManager, TagManager, TextureEntity, TextureManager,
+        CollisionLayerEntity, CollisionLayerManager, CollisionShapeEntity, DrawLayerManager, PieceCollider, PieceEntity, PileManager, PlayerColor, PlayerManager, QuadTreeManager, SnapTargetManager, TagManager, TextureEntity, TextureManager
     },
 };
 
@@ -1106,8 +1104,8 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F>
         Ok(())
     }
 
-    pub fn add_player(&mut self, color: PlayerColor, name: String) -> Result<(), String> {
-        self.player_manager.new_player(color, name)
+    pub fn add_player(&mut self, color: PlayerColor) -> Result<(), String> {
+        self.player_manager.new_player(color)
     }
 
     pub fn remove_player(&mut self, color: PlayerColor) {
