@@ -850,6 +850,9 @@ pub struct PlayerManager<V: IVec2> {
     /// positions of player's hands
     positions: DenseComponentManager<PlayerColor, V>,
 
+    /// the set of hidden players
+    hidden: DenseSet<PlayerColor>,
+
     /// the piece being held by players
     held_items: DenseComponentManager<PlayerColor, PieceEntity>,
 
@@ -862,6 +865,7 @@ impl<V: IVec2> Default for PlayerManager<V> {
         Self {
             players: DenseSet::with_capacity(PlayerColor::COLOR_COUNT),
             positions: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
+            hidden: DenseSet::with_capacity(PlayerColor::COLOR_COUNT),
             held_items: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
             item_holders: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
         }
@@ -890,6 +894,23 @@ impl<V: IVec2> PlayerManager<V> {
         Ok(())
     }
 
+    /// hides the given player, or does nothing if the player is hidden or doesn't exist
+    pub fn hide(&mut self, player: PlayerColor) {
+        if self.players.contains(player) {
+            self.hidden.insert(player);
+        }
+    }
+
+    /// shows the given player, or does nothing if the player is visible or doesn't exist
+    pub fn show(&mut self, player: PlayerColor) {
+        self.hidden.remove(player);
+    }
+
+    /// checks if the given player is visible
+    pub fn is_visible(&self, player: PlayerColor) -> bool {
+        !self.hidden.contains(player)
+    }
+
     /// checks if a player is contained
     pub fn is_playing(&self, color: PlayerColor) -> bool {
         self.players.contains(color)
@@ -899,6 +920,7 @@ impl<V: IVec2> PlayerManager<V> {
     pub fn remove_player(&mut self, player: PlayerColor) {
         self.players.remove(player);
         self.positions.remove(player);
+        self.hidden.remove(player);
     }
 
     /// gets the position of the given player

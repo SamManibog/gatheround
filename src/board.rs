@@ -15,7 +15,9 @@ use crate::{
     lua::FromLuaTable,
     renderer::{GlobalAssets, ITextureCompiler},
     resources::{
-        CollisionLayerEntity, CollisionLayerManager, CollisionShapeEntity, DrawLayerManager, PieceCollider, PieceEntity, PileManager, PlayerColor, PlayerManager, QuadTreeManager, SnapTargetManager, TagManager, TextureEntity, TextureManager
+        CollisionLayerEntity, CollisionLayerManager, CollisionShapeEntity, DrawLayerManager,
+        PieceCollider, PieceEntity, PileManager, PlayerColor, PlayerManager, QuadTreeManager,
+        SnapTargetManager, TagManager, TextureEntity, TextureManager,
     },
 };
 
@@ -1064,13 +1066,17 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F>
         &'b self,
         global_assets: &'a GlobalAssets<T>,
     ) -> impl Iterator<Item = (&'a T, V, C)> {
-        self.player_manager.position_iter().map(|(color, pos)| {
+        self.player_manager.position_iter().filter_map(|(color, pos)| {
+            if !self.player_manager.is_visible(color) {
+                return None;
+            }
+
             let texture = if self.player_manager.is_holding(color) {
                 &global_assets.closed_hand_texture
             } else {
                 &global_assets.open_hand_texture
             };
-            (texture, pos, color.into_color())
+            Some((texture, pos, color.into_color()))
         })
     }
 
@@ -1601,6 +1607,12 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F>
 
     /// checks if an item is hidden
     pub fn is_hidden(&self, entity: PieceEntity) -> bool {
+        if let Some(player) = self.player_manager.get_holder(entity) {
+            if !self.player_manager.is_visible(player) {
+                return false;
+            }
+        }
+
         let parent_or_self = if let Some(pile) = self.pile_manager.get_containing_pile(entity) {
             pile
         } else {
@@ -1817,6 +1829,73 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F>
         self.set_player_position(player, current_position.add(delta))
     }
 
+    /// gets an iterator over all pieces (not piles)
+    pub fn piece_iter(&self) -> impl Iterator<Item = PieceEntity> {
+        self.piece_entity_manager
+            .entity_iter()
+            .filter(|e| !self.pile_manager.is_on_pile(*e))
+    }
+
+    /// gets an iterator over all piles (not pieces)
+    pub fn pile_iter(&self) -> impl Iterator<Item = PieceEntity> {
+        self.piece_entity_manager
+            .entity_iter()
+            .filter(|e| self.pile_manager.is_on_pile(*e))
+    }
+
+    /// gets an iterator over all items
+    pub fn item_iter(&self) -> impl Iterator<Item = PieceEntity> {
+        self.piece_entity_manager.entity_iter()
+    }
+
+    /// gets a lua list of all pieces
+    pub fn lua_get_pieces(&self, lua: &Lua) -> mlua::Table {
+        let table = lua
+            .create_table_with_capacity(
+                self.piece_entity_manager.len() - self.pile_manager.pile_count(),
+                0,
+            )
+            .expect("unable to create all pieces table");
+
+        for (idx, piece) in self.piece_iter().enumerate() {
+            table
+                .raw_set(idx + 1, piece.id())
+                .expect("unable to create all pieces table");
+        }
+
+        table
+    }
+
+    /// gets a lua list of all piles
+    pub fn lua_get_piles(&self, lua: &Lua) -> mlua::Table {
+        let table = lua
+            .create_table_with_capacity(self.pile_manager.pile_count(), 0)
+            .expect("unable to create all piles table");
+
+        for (idx, pile) in self.pile_iter().enumerate() {
+            table
+                .raw_set(idx + 1, pile.id())
+                .expect("unable to create all piles table");
+        }
+
+        table
+    }
+
+    /// gets a lua list of all items
+    pub fn lua_get_items(&self, lua: &Lua) -> mlua::Table {
+        let table = lua
+            .create_table_with_capacity(self.piece_entity_manager.len(), 0)
+            .expect("unable to create all items table");
+
+        for (idx, item) in self.item_iter().enumerate() {
+            table
+                .raw_set(idx + 1, item.id())
+                .expect("unable to create all items table");
+        }
+
+        table
+    }
+
     /// sets the position of the player
     /// fails if the player does not exist
     pub fn set_player_position(&mut self, player: PlayerColor, position: V) -> Result<(), String> {
@@ -1837,6 +1916,32 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F>
         }
 
         Ok(())
+    }
+
+    /// checks if the given player is visible
+    pub fn is_player_visible(&self, player: PlayerColor) -> Result<bool, String> {
+        self.validate_player(player)?;
+        Ok(self.player_manager.is_visible(player))
+    }
+    
+    /// makes a player visible
+    pub fn show_player(&mut self, player: PlayerColor) -> Result<(), String> {
+        self.validate_player(player)?;
+        self.player_manager.show(player);
+        Ok(())
+    }
+
+    /// makes a player hidden
+    pub fn hide_player(&mut self, player: PlayerColor) -> Result<(), String> {
+        self.validate_player(player)?;
+        self.player_manager.hide(player);
+        Ok(())
+    }
+
+    /// checks if the given item is visible
+    pub fn is_visible(&self, entity: EntityIdentifier<PieceEntity>) -> Result<bool, String> {
+        let entity = self.validate_entity(entity)?;
+        Ok(!self.hidden_entities.contains(entity))
     }
 
     /// makes an item visible

@@ -284,6 +284,11 @@ impl<E: EntityTrait> NamedEntityManager<E> {
         self.entity_names.len()
     }
 
+    /// returns an iterator over entities
+    pub fn entity_iter(&self) -> impl Iterator<Item = E> {
+        self.entity_names.entity_iter()
+    }
+
     /// returns an iterator over entities and their optional names
     pub fn iter(&self) -> impl Iterator<Item = (E, Option<&String>)> {
         self.entity_names.pairs_iter().map(|(e, n)| {

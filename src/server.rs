@@ -3,6 +3,7 @@ use std::{
     fmt::Display,
     sync::{
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender},
     },
 };
@@ -20,7 +21,7 @@ use tokio::{self, task::JoinHandle};
 use tower_http::services::ServeDir;
 
 use crate::{
-    ecs::DenseSet,
+    ecs::DenseComponentManager,
     input::{DeserializableInputEvent, InputEvent, PlayerInputEvent},
     resources::PlayerColor,
 };
@@ -74,6 +75,7 @@ impl Display for InvalidSessionError {
 
 enum NewSessionError {
     GameFull,
+    NewJoinsBlocked,
     PlayerAlreadyUsed,
     SessionAlreadyEstablished,
 }
@@ -82,6 +84,7 @@ impl Display for NewSessionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let message = match self {
             Self::GameFull => "game full",
+            Self::NewJoinsBlocked => "joins blocked",
             Self::PlayerAlreadyUsed => "color taken",
             Self::SessionAlreadyEstablished => "session exists",
         };
@@ -92,21 +95,43 @@ impl Display for NewSessionError {
 #[derive(Debug)]
 struct SessionManager {
     new_player_sender: Sender<PlayerColor>,
-    token_player_map: HashMap<Box<SessionToken>, PlayerColor>,
-    used_players: DenseSet<PlayerColor>,
+    kick_player_reciever: Receiver<PlayerColor>,
+    token_player_map: HashMap<SessionToken, PlayerColor>,
+    used_players: DenseComponentManager<PlayerColor, SessionToken>,
+    allow_joins: Arc<AtomicBool>,
 }
 
 impl SessionManager {
-    pub fn new(new_player_sender: Sender<PlayerColor>) -> Self {
+    pub fn new(
+        new_player_sender: Sender<PlayerColor>,
+        kick_player_reciever: Receiver<PlayerColor>,
+        allow_joins: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             new_player_sender,
+            kick_player_reciever,
             token_player_map: Default::default(),
-            used_players: DenseSet::with_capacity(PlayerColor::COLOR_COUNT),
+            used_players: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
+            allow_joins,
+        }
+    }
+
+    fn handle_kicks(&mut self) {
+        for player in self.kick_player_reciever.try_iter() {
+            if let Some(token) = self.used_players.remove(player) {
+                self.token_player_map.remove(&token);
+            }
         }
     }
 
     /// creates a new player
     pub fn new_player(&mut self, color: PlayerColor) -> Result<SessionToken, NewSessionError> {
+        self.handle_kicks();
+
+        if !self.allow_joins.load(Ordering::Relaxed) {
+            return Err(NewSessionError::NewJoinsBlocked);
+        }
+
         if self.used_players.len() >= PlayerColor::COLOR_COUNT {
             return Err(NewSessionError::GameFull);
         }
@@ -123,19 +148,23 @@ impl SessionManager {
             token
         };
 
-        self.token_player_map.insert(Box::new(token.clone()), color);
-        self.used_players.insert(color);
-        self.new_player_sender.send(color).expect("Could not send new player to main thread.");
+        self.token_player_map.insert(token.clone(), color);
+        self.used_players.insert(color, token.clone());
+        self.new_player_sender
+            .send(color)
+            .expect("Could not send new player to main thread.");
         println!("sending new player");
 
-        Ok(token)
+        Ok(token.clone())
     }
 
     /// gets the player color associated with the given session
     pub fn session_player_color(
-        &self,
+        &mut self,
         token: &SessionToken,
     ) -> Result<PlayerColor, InvalidSessionError> {
+        self.handle_kicks();
+
         match self.token_player_map.get(token) {
             Some(color) => Ok(*color),
             None => Err(InvalidSessionError::DoesNotExist),
@@ -158,7 +187,9 @@ struct DeserializablePlayerJoinRequest {
 pub struct GameServer {
     input_receiver: Receiver<PlayerInputEvent>,
     new_player_receiver: Receiver<PlayerColor>,
+    kick_player_sender: Sender<PlayerColor>,
     service_thread: JoinHandle<Result<(), tokio::io::Error>>,
+    allow_joins: Arc<AtomicBool>,
 }
 
 impl GameServer {
@@ -176,11 +207,8 @@ impl GameServer {
 
     pub const COOKIE_LIFETIME: Duration = Duration::days(7);
 
-    async fn has_session_handler(
-        State(state): State<Arc<ServerState>>,
-        jar: CookieJar,
-    ) -> String {
-        let sessions_lock = match state.sessions.lock() {
+    async fn has_session_handler(State(state): State<Arc<ServerState>>, jar: CookieJar) -> String {
+        let mut sessions_lock = match state.sessions.lock() {
             Ok(lock) => lock,
             Err(msg) => panic!("{}", msg),
         };
@@ -211,7 +239,7 @@ impl GameServer {
             None => return (StatusCode::UNAUTHORIZED, "Invalid session_id".to_owned()),
         };
 
-        let sessions_lock = match state.sessions.lock() {
+        let mut sessions_lock = match state.sessions.lock() {
             Ok(lock) => lock,
             Err(msg) => panic!("{}", msg),
         };
@@ -289,10 +317,16 @@ impl GameServer {
 
         let (input_sender, input_receiver) = mpsc::channel();
         let (new_player_sender, new_player_receiver) = mpsc::channel();
+        let (kick_player_sender, kick_player_receiver) = mpsc::channel();
+        let allow_joins = Arc::new(AtomicBool::new(true));
 
         let state = ServerState {
             input_sender,
-            sessions: Mutex::new(SessionManager::new(new_player_sender)),
+            sessions: Mutex::new(SessionManager::new(
+                new_player_sender,
+                kick_player_receiver,
+                allow_joins.clone(),
+            )),
         };
 
         let app = Router::new()
@@ -315,10 +349,30 @@ impl GameServer {
         println!("Server started at {host_addr}.");
 
         Self {
+            allow_joins,
             input_receiver,
             new_player_receiver,
+            kick_player_sender,
             service_thread,
         }
+    }
+
+    /// blocks new players from joining
+    pub fn block_new_players(&self) {
+        self.allow_joins.store(false, Ordering::Relaxed);
+    }
+
+    /// allows new players to join
+    /// (enabled upon server creation)
+    pub fn allow_new_players(&self) {
+        self.allow_joins.store(true, Ordering::Relaxed);
+    }
+
+    /// sends a signal to kick the given player
+    pub fn kick_player(&self, player: PlayerColor) {
+        self.kick_player_sender
+            .send(player)
+            .expect("Unable to kick player");
     }
 
     pub fn poll_inputs(&self) -> impl Iterator<Item = PlayerInputEvent> {

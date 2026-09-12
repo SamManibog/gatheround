@@ -810,6 +810,122 @@ pub fn get_game_lua_instance(
     );
 
     define_game_api!(
+        "is_player_visible",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, value: Value| {
+                // try to parse the entity
+                let player_result = PlayerColor::try_from_lua_value(&value);
+                if let Err(msg) = player_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let player = player_result.unwrap();
+
+                let board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.is_player_visible(player) {
+                    Ok(b) => Ok(b),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
+        "show_player",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, value: Value| {
+                // try to parse the entity
+                let player_result = PlayerColor::try_from_lua_value(&value);
+                if let Err(msg) = player_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let player = player_result.unwrap();
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.show_player(player) {
+                    Ok(b) => Ok(b),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
+        "hide_player",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, value: Value| {
+                // try to parse the entity
+                let player_result = PlayerColor::try_from_lua_value(&value);
+                if let Err(msg) = player_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let player = player_result.unwrap();
+
+                let mut board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.hide_player(player) {
+                    Ok(b) => Ok(b),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
+        "is_visible",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, value: Value| {
+                // try to parse the entity
+                let entity_result = EntityIdentifier::try_from_lua_value(&value);
+                if let Err(msg) = entity_result {
+                    return Err(mlua::Error::RuntimeError(msg));
+                }
+                let entity = entity_result.unwrap();
+
+                let board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                match board.is_visible(entity) {
+                    Ok(b) => Ok(b),
+
+                    Err(msg) => Err(mlua::Error::RuntimeError(msg)),
+                }
+            }
+        }
+    );
+
+    define_game_api!(
         "show",
         lua,
         project_path,
@@ -1594,6 +1710,60 @@ pub fn get_game_lua_instance(
 
                     Err(msg) => Err(mlua::Error::RuntimeError(msg)),
                 }
+            }
+        }
+    );
+
+    define_game_api!(
+        "get_piles",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, _: ()| {
+                let board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                Ok(board.lua_get_piles(lua))
+            }
+        }
+    );
+
+    define_game_api!(
+        "get_pieces",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, _: ()| {
+                let board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                Ok(board.lua_get_pieces(lua))
+            }
+        }
+    );
+
+    define_game_api!(
+        "get_items",
+        lua,
+        project_path,
+        board_cell,
+        rl_cell,
+        thread_cell,
+        {
+            move |lua, _: ()| {
+                let board = board_cell
+                    .try_borrow_mut()
+                    .expect("board is already borrowed");
+
+                Ok(board.lua_get_items(lua))
             }
         }
     );
