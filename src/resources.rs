@@ -1146,12 +1146,22 @@ impl<F> FontManager<F> {
         self.fonts.clear();
     }
 
-    /// gets builtin font data (fonts that dont need to be installed)
+    /// gets builtin font data
     fn get_builtin_data(font_name: &str) -> Option<&'static BuiltinFontData> {
         match font_name {
             "lucida-console.ttf" => Some(&BuiltinFontData {
                 filetype: ".ttf",
                 data: include_bytes!("lucida-console.ttf"),
+            }),
+
+            "ptserif.ttf" => Some(&BuiltinFontData {
+                filetype: ".ttf",
+                data: include_bytes!("ptserif.ttf"),
+            }),
+
+            "ptserif-bold.ttf" => Some(&BuiltinFontData {
+                filetype: ".ttf",
+                data: include_bytes!("ptserif-bold.ttf"),
             }),
 
             _ => None,
