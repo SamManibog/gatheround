@@ -15,5 +15,4 @@ pub mod color;
 pub mod bitvec;
 pub mod geometry;
 pub mod quadtree;
-pub(crate) mod quadtree_test;
 pub mod ecs;
