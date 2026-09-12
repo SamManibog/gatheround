@@ -402,19 +402,19 @@ impl<C: IColor, R: IRect, V: IVec2> PatternInfo<C, R, V> {
             PatternType::Checkers => {
                 let repetition_length = (self.weight + self.spacing) * 2.0;
                 V::from_xy(
-                    self.offset.x() % repetition_length,
-                    self.offset.y() % repetition_length,
+                    self.offset.x().rem_euclid(repetition_length),
+                    self.offset.y().rem_euclid(repetition_length),
                 )
             }
             PatternType::Stripes => {
                 let repetition_length = self.weight + self.spacing;
-                V::from_xy(self.offset.x() % repetition_length, 0.0)
+                V::from_xy(self.offset.x().rem_euclid(repetition_length), 0.0)
             }
             PatternType::Dots => {
                 let repetition_length = self.weight + self.spacing;
                 V::from_xy(
-                    self.offset.x() % repetition_length,
-                    self.offset.y() % repetition_length,
+                    self.offset.x().rem_euclid(repetition_length),
+                    self.offset.y().rem_euclid(repetition_length),
                 )
             }
         }

@@ -1436,7 +1436,6 @@ pub async fn run_game(project_path: &Path) {
         )
         .resizable()
         .build();
-    rl.hide_cursor();
     rl.set_exit_key(None);
     rl.set_target_fps(FRAME_RATE);
     let mut output_texture = rl
@@ -1476,11 +1475,33 @@ pub async fn run_game(project_path: &Path) {
     // initialize server
     let server = GameServer::run_new().await;
 
+    // initialize ui
+    const CURSOR_SHOW_FRAMES: u32 = FRAME_RATE * 5;
+    let mut frames_until_hide_ui: u32 = CURSOR_SHOW_FRAMES;
+
     // run main loop
     loop {
         // detect window close
         if rl_cell.borrow_mut().window_should_close() {
             return;
+        }
+
+        // show or hide cursor, if relevant
+        {
+            let mut rl = rl_cell.borrow_mut();
+            if rl.get_mouse_delta() == Vector2::origin() {
+                frames_until_hide_ui = frames_until_hide_ui.saturating_sub(1);
+            } else {
+                frames_until_hide_ui = CURSOR_SHOW_FRAMES;
+            }
+
+            let should_show_ui = frames_until_hide_ui > 0;
+            match (rl.is_cursor_hidden(), should_show_ui) {
+                (true, true) => rl.show_cursor(),
+                (true, false) => (),
+                (false, true) => (),
+                (false, false) => rl.hide_cursor(),
+            }
         }
 
         // poll for new players
