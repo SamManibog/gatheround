@@ -112,6 +112,12 @@ impl<V: IVec2> Default for PileManager<V> {
 }
 
 impl<V: IVec2> PileManager<V> {
+    /// clears the pile manager of all date
+    pub fn clear(&mut self) {
+        self.piles.clear();
+        self.piece_pile_map.clear();
+    }
+
     /// check if an entity is a pile
     pub fn is_pile(&self, pile: PieceEntity) -> bool {
         self.piles.contains(pile)
@@ -312,15 +318,19 @@ impl Default for TagManager {
 }
 
 impl TagManager {
+    /// clears the tag manager of all tags
+    pub fn clear(&mut self) {
+        self.tag_collections.clear();
+        self.piece_tags.clear();
+    }
+
     /// adds tags to a piece
     pub fn add_tags<'a, 'b: 'a>(
         &'b mut self,
         piece: PieceEntity,
         tags: impl Iterator<Item = &'a String>,
     ) {
-        let piece_tags = self
-            .piece_tags
-            .get_mut_or_insert(piece, || DenseSet::new());
+        let piece_tags = self.piece_tags.get_mut_or_insert(piece, || DenseSet::new());
 
         for tag in tags {
             let (tag_entity, tag_collection) =
@@ -399,8 +409,7 @@ impl TagManager {
 
         for tag in tags {
             if let Some(tag_entity) = self.tag_collections.get_entity(&tag) {
-                let tag_collection =
-                    self.tag_collections.get_mut(tag_entity).unwrap();
+                let tag_collection = self.tag_collections.get_mut(tag_entity).unwrap();
 
                 piece_tags.remove(tag_entity);
                 tag_collection.remove(piece);
@@ -425,10 +434,10 @@ impl TagManager {
 
     /// returns an iterator over all tags assigned to a piece
     pub fn piece_tags(&self, piece: PieceEntity) -> impl Iterator<Item = &String> {
-        self.piece_tags.get(piece).into_iter().flat_map(|c| {
-            c.iter()
-                .map(|e| self.tag_collections.get_name(e).unwrap())
-        })
+        self.piece_tags
+            .get(piece)
+            .into_iter()
+            .flat_map(|c| c.iter().map(|e| self.tag_collections.get_name(e).unwrap()))
     }
 
     /// returns an iterator over all pieces in a tag
@@ -459,6 +468,12 @@ impl Default for DrawLayerManager {
 }
 
 impl DrawLayerManager {
+    /// clears the maanager of all draw layers
+    pub fn clear(&mut self) {
+        self.draw_layer_refs.clear();
+        self.piece_draw_layers.clear();
+    }
+
     fn decrement_ref_count(draw_layer_refs: &mut BTreeMap<i32, usize>, layer: i32) {
         if let Some(refs) = draw_layer_refs.get_mut(&layer) {
             *refs = refs.saturating_sub(1);
@@ -525,6 +540,11 @@ impl Default for CollisionLayerManager {
 }
 
 impl CollisionLayerManager {
+    /// clears the manager of all shapes
+    pub fn clear(&mut self) {
+        self.layers.clear();
+    }
+
     /// increments the ref count for the layer with the given name
     /// returns the corresponding layer entity
     pub fn increment_count(&mut self, layer: &String) -> CollisionLayerEntity {
@@ -582,6 +602,12 @@ impl<R: IRect> QuadTreeManager<R> {
             aabbs: Default::default(),
             quadtree: QuadTree::new(rect),
         }
+    }
+
+    /// clears the quadtree of all data
+    pub fn clear(&mut self) {
+        self.aabbs.clear();
+        self.quadtree.clear();
     }
 
     /// removes the piece from this quadtree, returning its aabb if its
@@ -712,7 +738,7 @@ impl TryFrom<&str> for PlayerColor {
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match Self::from_name(&value) {
             Some(s) => Ok(s),
-            None => Err(format!("Unrecognized color: {value}"))
+            None => Err(format!("Unrecognized color: {value}")),
         }
     }
 }
@@ -796,6 +822,12 @@ impl Default for SnapTargetManager {
 }
 
 impl SnapTargetManager {
+    /// clears the target manager of all data
+    pub fn clear(&mut self) {
+        self.player_to_pile.clear();
+        self.pile_to_players.clear();
+    }
+
     /// sets the pile a player's contents is snapping to
     pub fn set_snap_target(&mut self, player: PlayerColor, pile_opt: Option<PieceEntity>) {
         // get rid of player's original snap target
@@ -842,7 +874,7 @@ impl SnapTargetManager {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PlayerManager<V: IVec2> {
     /// player colors in use
     players: DenseSet<PlayerColor>,
@@ -979,6 +1011,15 @@ impl<V: IVec2> PlayerManager<V> {
     pub fn iter(&self) -> impl Iterator<Item = PlayerColor> {
         self.players.iter()
     }
+
+    /// resets all players to their original state: nothing held, all visible
+    pub fn reset_player_states(&mut self) {
+        let players: Vec<PlayerColor> = self.iter().collect();
+        for player in players {
+            self.set_held_item(player, None);
+            self.show(player);
+        }
+    }
 }
 
 /// texture info for a piece face
@@ -1082,9 +1123,39 @@ impl<F> Default for FontManager<F> {
     }
 }
 
+struct BuiltinFontData {
+    filetype: &'static str,
+    data: &'static [u8],
+}
+
+enum FontLoadIdentifier<'a> {
+    Path(&'a Path),
+    Builtin(&'static BuiltinFontData),
+}
+
 impl<F> FontManager<F> {
+    /// the minimum set of characters that every font will try to load
+    pub const BASE_CHARSET: &str = "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+
     pub fn new() -> Self {
         Self::default()
+    }
+
+    // remvoes all fonts
+    pub fn clear(&mut self) {
+        self.fonts.clear();
+    }
+
+    /// gets builtin font data (fonts that dont need to be installed)
+    fn get_builtin_data(font_name: &str) -> Option<&'static BuiltinFontData> {
+        match font_name {
+            "lucida-console.ttf" => Some(&BuiltinFontData {
+                filetype: ".ttf",
+                data: include_bytes!("lucida-console.ttf"),
+            }),
+
+            _ => None,
+        }
     }
 
     /// batch loads multiple font sizes at once
@@ -1098,7 +1169,26 @@ impl<F> FontManager<F> {
         characters: &str,
     ) -> bool {
         for font_dir in get_font_paths(project_path) {
-            if self.batch_load_font_helper(renderer, &font_dir, font_name, sizes, characters) {
+            let path_buf = font_dir.join(font_name);
+            if self.batch_load_font_helper(
+                renderer,
+                FontLoadIdentifier::Path(&path_buf),
+                font_name,
+                sizes,
+                characters,
+            ) {
+                return true;
+            }
+        }
+
+        if let Some(builtin) = Self::get_builtin_data(&font_name) {
+            if self.batch_load_font_helper(
+                renderer,
+                FontLoadIdentifier::Builtin(&builtin),
+                font_name,
+                sizes,
+                characters,
+            ) {
                 return true;
             }
         }
@@ -1111,13 +1201,11 @@ impl<F> FontManager<F> {
     pub fn batch_load_font_helper<R: ITextureCompiler<Font = F>>(
         &mut self,
         renderer: &mut R,
-        font_dir: &Path,
+        font_identifier: FontLoadIdentifier,
         font_name: &String,
         sizes: &[u32],
         characters: &str,
     ) -> bool {
-        let path_buf = font_dir.join(font_name);
-
         if let Some(entry) = self.fonts.get_mut(font_name) {
             // update existing entry with new characters
             let mut needs_update = false;
@@ -1135,7 +1223,17 @@ impl<F> FontManager<F> {
             if needs_update {
                 // reload all contained font sizes
                 for (size, font) in entry.sizes.iter_mut() {
-                    let font_result = renderer.load_font(&path_buf, *size, &characters);
+                    let font_result = match font_identifier {
+                        FontLoadIdentifier::Path(path) => {
+                            renderer.load_font(&path, *size, &characters)
+                        }
+                        FontLoadIdentifier::Builtin(builtin) => renderer.load_font_from_memory(
+                            builtin.filetype,
+                            builtin.data,
+                            *size,
+                            &characters,
+                        ),
+                    };
                     if font_result.is_err() {
                         return false;
                     }
@@ -1149,7 +1247,15 @@ impl<F> FontManager<F> {
                     continue;
                 }
 
-                let font_result = renderer.load_font(&path_buf, *size, &characters);
+                let font_result = match font_identifier {
+                    FontLoadIdentifier::Path(path) => renderer.load_font(&path, *size, &characters),
+                    FontLoadIdentifier::Builtin(builtin) => renderer.load_font_from_memory(
+                        builtin.filetype,
+                        builtin.data,
+                        *size,
+                        &characters,
+                    ),
+                };
                 if font_result.is_err() {
                     return false;
                 }
@@ -1163,11 +1269,24 @@ impl<F> FontManager<F> {
         // completely new font entry
         let mut temp_map = BTreeMap::new();
         for size in sizes {
-            let font_result = renderer.load_font(&path_buf, *size, characters);
+            let font_result = match font_identifier {
+                FontLoadIdentifier::Path(path) => renderer.load_font(&path, *size, &characters),
+                FontLoadIdentifier::Builtin(builtin) => renderer.load_font_from_memory(
+                    builtin.filetype,
+                    builtin.data,
+                    *size,
+                    &characters,
+                ),
+            };
             if font_result.is_err() {
                 if !temp_map.is_empty() {
                     let entry = FontEntry {
-                        charset: RoaringBitmap::from_iter(characters.chars().map(|c| c as u32)),
+                        charset: RoaringBitmap::from_iter(
+                            characters
+                                .chars()
+                                .chain(Self::BASE_CHARSET.chars())
+                                .map(|c| c as u32),
+                        ),
                         sizes: temp_map,
                     };
                     self.fonts.insert(font_name.clone(), entry);
@@ -1370,7 +1489,7 @@ impl<T, F> TextureManager<T, F> {
 
     /// clears the cached fonts
     pub fn clear_font_cache(&mut self) {
-        self.fonts = Default::default();
+        self.fonts.clear();
     }
 
     /// loads an image, returning true on successful load
@@ -1398,6 +1517,13 @@ impl<T, F> TextureManager<T, F> {
 
     /// clears the cached images
     pub fn clear_image_cache(&mut self) {
-        self.images = Default::default();
+        self.images.clear();
+    }
+
+    /// clears all data from the manager
+    pub fn clear(&mut self) {
+        self.fonts.clear();
+        self.images.clear();
+        self.textures.clear();
     }
 }

@@ -213,6 +213,17 @@ impl<E: EntityTrait> NamedEntityManager<E> {
         }
     }
 
+    /// clears the entity manager of all entities
+    pub fn clear(&mut self) {
+        self.free_entity_queue = VecDeque::with_capacity(INITIAL_ENTITY_CAPACITY);
+        for i in 0..INITIAL_ENTITY_CAPACITY {
+            self.free_entity_queue.push_back(E::from_id(i as usize));
+        }
+
+        self.entity_names.clear();
+        self.name_to_entity_map.clear();
+    }
+
     /// gets a new entity
     fn get_new_entity(&mut self) -> E {
         if self.free_entity_queue.is_empty() {
@@ -380,6 +391,11 @@ impl<E: EntityTrait> DenseSet<E> {
         }
     }
 
+    /// clears the dense set of all data
+    pub fn clear(&mut self) {
+        self.entities.clear();
+    }
+
     /// creates a new dense storage with the given capacity
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
@@ -463,6 +479,13 @@ impl<E: EntityTrait, T> DenseComponentManager<E, T> {
             entities: Vec::with_capacity(capacity),
             data: Vec::with_capacity(capacity),
         }
+    }
+
+    /// clears he component manager of all entities and components
+    pub fn clear(&mut self) {
+        self.sparse = vec![usize::MAX, INITIAL_ENTITY_CAPACITY];
+        self.entities.clear();
+        self.data.clear();
     }
 
     /// returns the number of entities managed
@@ -628,6 +651,20 @@ impl<E: EntityTrait, T> Default for ResourceManager<E, T> {
 }
 
 impl<E: EntityTrait, T> ResourceManager<E, T> {
+    /// deletes all data
+    pub fn clear(&mut self) {
+        self.free_entity_queue.clear();
+        for i in 0..INITIAL_ENTITY_CAPACITY {
+            self.free_entity_queue.push_back(E::from_id(i as usize));
+        }
+
+        self.name_to_entity_map.clear();
+        self.sparse.clear();
+        self.name_to_entity_map.clear();
+        self.entities.clear();
+        self.resources.clear();
+    }
+
     /// creates a new entity manager
     pub fn new() -> Self {
         let mut free_entity_queue = VecDeque::with_capacity(INITIAL_ENTITY_CAPACITY);

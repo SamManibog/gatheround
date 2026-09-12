@@ -47,6 +47,14 @@ impl<E: Clone + Eq, R: IRect> QuadTree<E, R> {
         }
     }
 
+    /// clears the quadtree of all contents and subregions
+    pub fn clear(&mut self) {
+        self.entry_count = 0;
+        self.contained_entries.clear();
+        self.overflow_entries.clear();
+        self.subregions = None;
+    }
+
     /// returns the aabb of the quadtree
     pub fn aabb(&self) -> R {
         self.aabb

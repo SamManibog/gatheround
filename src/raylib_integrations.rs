@@ -757,6 +757,25 @@ impl<'a> ITextureCompiler for RaylibTextureCompiler<'a> {
         })
     }
 
+    fn load_font_from_memory(
+        &mut self,
+        filetype: &str,
+        bytes: &[u8],
+        size: u32,
+        characters: &str,
+    ) -> Result<Self::Font, String> {
+        match self.rl.load_font_from_memory(
+            &self.thread,
+            filetype,
+            bytes,
+            size as i32,
+            Some(characters),
+        ) {
+            Ok(f) => Ok(f),
+            Err(msg) => Err(format!("Failed to load font from memory: {msg}",)),
+        }
+    }
+
     fn load_font(
         &mut self,
         path: &std::path::Path,
@@ -770,8 +789,8 @@ impl<'a> ITextureCompiler for RaylibTextureCompiler<'a> {
             Some(characters),
         ) {
             Ok(f) => Ok(f),
-            Err(_) => Err(format!(
-                "Failed to load font from '{}'",
+            Err(msg) => Err(format!(
+                "Failed to load font from '{}': {msg}",
                 path.to_string_lossy()
             )),
         }
@@ -1141,7 +1160,8 @@ pub struct TextCommandBuffer {
 
 impl TextCommandBuffer {
     /// the default font, should be monospace
-    pub const DEFAULT_FONT: &str = r"C:\Windows\Fonts/lucon.ttf";
+    pub const DEFAULT_FONT_DATA: &[u8] = include_bytes!("lucon.ttf");
+    pub const DEFAULT_FONT_FILETYPE: &str = ".ttf";
     pub const MAX_HISTORY: usize = 250;
 
     const BLINK_FRAMES: u32 = FRAME_RATE / 2;
@@ -1160,11 +1180,14 @@ impl TextCommandBuffer {
 
     pub fn new(rl: &mut RaylibHandle, thread: &RaylibThread) -> Self {
         let font = rl
-            .load_font_ex(thread, Self::DEFAULT_FONT, Self::TEXT_SIZE as i32, None)
-            .expect(&format!(
-                "Unable to load command buffer font '{}'",
-                Self::DEFAULT_FONT
-            ));
+            .load_font_from_memory(
+                thread,
+                Self::DEFAULT_FONT_FILETYPE,
+                Self::DEFAULT_FONT_DATA,
+                Self::TEXT_SIZE as i32,
+                None,
+            )
+            .expect(&format!("Unable to load command buffer font"));
 
         Self {
             history: VecDeque::with_capacity(Self::MAX_HISTORY),

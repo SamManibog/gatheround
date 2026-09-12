@@ -59,6 +59,16 @@ pub trait ITextureCompiler {
     fn load_font(&mut self, path: &Path, size: u32, characters: &str)
     -> Result<Self::Font, String>;
 
+    /// loads a font from memory into an acceptable format
+    /// return a result with a message for an error
+    fn load_font_from_memory(
+        &mut self,
+        filetype: &str,
+        bytes: &[u8],
+        size: u32,
+        characters: &str,
+    ) -> Result<Self::Font, String>;
+
     /// loads an image into an acceptable format
     /// return a result with a message for an error
     fn load_texture(&mut self, path: &Path) -> Result<Self::Texture, String>;

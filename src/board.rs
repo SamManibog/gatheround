@@ -152,6 +152,31 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F>
         }
     }
 
+    /// resets the board, clearing all data accept player positions
+    /// background color is reset to white
+    pub fn reset(&mut self) {
+        self.player_manager.reset_player_states();
+
+        self.texture_manager.clear();
+        self.collision_shape_manager.clear();
+        self.collision_layer_manager.clear();
+        self.entity_draw_layers.clear();
+        self.tag_manager.clear();
+        self.snap_manager.clear();
+        self.piece_entity_manager.clear();
+        self.debug_entities.clear();
+        self.hidden_entities.clear();
+        self.no_collision_entities.clear();
+        self.pile_manager.clear();
+        self.piece_textures.clear();
+        self.entity_draw_order.clear();
+        self.entity_transforms.clear();
+        self.piece_colliders.clear();
+        self.quadtree.clear();
+        self.snap_quadtree.clear();
+        self.color = C::from_rgba(255, 255, 255, 255);
+    }
+
     pub fn validate_shape_ir(&self, ir: &CollisionShapeIR<S>) -> Result<(), String> {
         if let CollisionShapeIR::Identifier(i) = ir {
             match &i {
@@ -1976,6 +2001,23 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F>
         let entity = self.validate_entity(entity)?;
         self.no_collision_entities.remove(entity);
         Ok(())
+    }
+}
+
+pub struct LobbyBoard<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> {
+    board: Box<BoardManager<C, R, V, S, T, F>>,
+}
+
+impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> LobbyBoard<C, R, V, S, T, F> {
+    pub fn new(mut board: Box<BoardManager<C, R, V, S, T, F>>) -> Self {
+        board.reset();
+        Self {
+            board
+        }
+    }
+
+    pub fn unwrap(self) -> Box<BoardManager<C, R, V, S, T, F>> {
+        self.board
     }
 }
 
