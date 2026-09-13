@@ -186,15 +186,9 @@ pub trait IPlatform: 'static {
     /// this value shouldn't change
     fn delta_time(&mut self) -> f32;
 
-    fn use_renderer<F, O>(&mut self, action: F) -> O
-    where
-        F: for<'a> FnOnce(Self::Renderer<'a>) -> O;
+    fn renderer(&mut self) -> Self::Renderer<'_>;
 
-    fn use_texture_compiler<F, O>(&mut self, action: F) -> O
-    where
-        F: for<'a> FnOnce(Self::TextureCompiler<'a>) -> O;
+    fn texture_compiler(&mut self) -> Self::TextureCompiler<'_>;
 
-    fn use_keyboard_reader<F, O>(&mut self, action: F) -> O
-    where
-        F: for<'a> FnOnce(Self::KeyboardReader<'a>) -> O;
+    fn keyboard_reader(&mut self) -> Self::KeyboardReader<'_>;
 }

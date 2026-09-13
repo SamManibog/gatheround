@@ -1379,39 +1379,24 @@ impl IPlatform for RaylibPlatform {
         1.0 / TARGET_FRAME_RATE as f32
     }
 
-    fn use_renderer<F, O>(&mut self, action: F) -> O
-    where
-        F: for<'a> FnOnce(Self::Renderer<'a>) -> O
-    {
-        let renderer = RaylibRenderer {
+    fn renderer(&mut self) -> Self::Renderer<'_> {
+        RaylibRenderer {
             rl: &mut self.rl,
             thread: &self.thread,
             draw_layer_pool: &mut self.draw_layer_pool,
             output_texture: &mut self.output_texture,
             secs_since_cursor_moved: &mut self.secs_since_cursor_moved,
-        };
-
-        action(renderer)
+        }
     }
 
-    fn use_texture_compiler<F, O>(&mut self, action: F) -> O
-    where
-        F: for<'a> FnOnce(Self::TextureCompiler<'a>) -> O
-    {
-        let texture_compiler = RaylibTextureCompiler {
+    fn texture_compiler(&mut self) -> Self::TextureCompiler<'_> {
+        RaylibTextureCompiler {
             rl: &mut self.rl,
             thread: &self.thread,
-        };
-
-        action(texture_compiler)
+        }
     }
 
-    fn use_keyboard_reader<F, O>(&mut self, action: F) -> O
-    where
-        F: for<'a> FnOnce(Self::KeyboardReader<'a>) -> O
-    {
-        let keyboard_reader = RaylibKeyboardReader { rl: &mut self.rl };
-
-        action(keyboard_reader)
+    fn keyboard_reader(&mut self) -> Self::KeyboardReader<'_> {
+        RaylibKeyboardReader { rl: &mut self.rl }
     }
 }

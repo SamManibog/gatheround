@@ -30,20 +30,19 @@ pub async fn run_app_with_settings<
     dimensions: V,
     mut platform: P,
 ) {
-    let board = BoardManager::new(dimensions);
-    let board_cell = Rc::new(RefCell::new(board));
-
     // initialize input state
     let mut input_state = InputState::default();
 
     // load global assets
-    let global_assets = platform.use_texture_compiler(|mut texture_compiler| {
-        board_cell.borrow_mut().lobby_mode(
-            &mut texture_compiler,
-            &format!("{host_address}{}", GameServer::MAIN_PATH),
-        );
-        GlobalAssets::new(&mut texture_compiler)
-    });
+    let global_assets = GlobalAssets::new(&mut platform.texture_compiler());
+
+    // initialize board
+    let mut board = BoardManager::new(dimensions);
+    board.lobby_mode(
+        &mut platform.texture_compiler(),
+        &format!("{host_address}{}", GameServer::MAIN_PATH),
+    );
+    let board_cell = Rc::new(RefCell::new(board));
 
     // initialize cheat buffer
     let mut cheat_buffer = CheatBuffer::new();
@@ -98,13 +97,12 @@ pub async fn run_app_with_settings<
 
         // update commands
         {
-            let mut platform = platform_cell.borrow_mut();
-            let delta_time = platform.delta_time();
-            let cmd_opt = platform.use_keyboard_reader(|mut keyboard_reader| {
-                cheat_buffer.update(&mut keyboard_reader, delta_time)
-            });
+            let delta_time = platform_cell.borrow_mut().delta_time();
+            let cmd_opt = cheat_buffer.update(
+                &mut platform_cell.borrow_mut().keyboard_reader(),
+                delta_time,
+            );
             if let Some(cmd) = cmd_opt {
-                drop(platform);
                 match lua.load(cmd).eval::<mlua::MultiValue>() {
                     Ok(v) => println!("GOTVALUE FROM COMMAND!: {:?}", v),
                     Err(e) => {
@@ -117,11 +115,10 @@ pub async fn run_app_with_settings<
         // run draw cycle
         {
             let board = board_cell.borrow();
-            let mut platform = platform_cell.borrow_mut();
-
-            platform.use_renderer(|mut renderer| {
-                renderer.draw_app(&board, &cheat_buffer, &global_assets);
-            });
+            platform_cell
+                .borrow_mut()
+                .renderer()
+                .draw_app(&board, &cheat_buffer, &global_assets);
         }
     }
 }
