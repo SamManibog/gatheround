@@ -1,17 +1,8 @@
-use std::{
-    cell::RefCell,
-    collections::{BTreeMap, VecDeque},
-    path::Path,
-    rc::Rc,
-};
+use std::collections::BTreeMap;
 
-use mlua::MultiValue;
 use raylib::{
     RaylibHandle, RaylibThread, callbacks,
-    drawing::{
-        RaylibBlendModeExt, RaylibDraw, RaylibDrawHandle, RaylibScissorModeExt,
-        RaylibTextureModeExt,
-    },
+    drawing::{RaylibBlendModeExt, RaylibDraw, RaylibScissorModeExt, RaylibTextureModeExt},
     ffi::{Color, KeyboardKey, Rectangle, TraceLogLevel, Vector2},
     text::{Font, RaylibFont},
     texture::{Image, RaylibTexture2D, RenderTexture2D},
@@ -19,21 +10,18 @@ use raylib::{
 
 use crate::{
     board::BoardManager,
+    cheat_buffer::CheatBuffer,
     color::IColor,
     geometry::{ConvexHull, IConvexShape, IRect, IVec2},
-    input::InputState,
     intermediate_representations::{
         Alignment, ImageTransform, PatternInfo, PatternType, TextboxInfo, VisualComponent,
         VisualInfo,
     },
-    lua::get_game_lua_instance,
-    renderer::{GlobalAssets, IRenderer, ITextureCompiler},
+    platform::{GlobalAssets, IKeyboardReader, IPlatform, IRenderer, ITextureCompiler},
     resources::{TextureInfo, VisualComponentProvider},
-    server::GameServer,
 };
 
-const FRAME_RATE: u32 = 60;
-const MAIN_LUA_FILE: &str = "main.lua";
+const TARGET_FRAME_RATE: u32 = 60;
 
 impl IVec2 for Vector2 {
     fn from_xy(x: f32, y: f32) -> Self {
@@ -110,9 +98,10 @@ impl IColor for Color {
     }
 }
 
+#[derive(Debug)]
 pub struct RaylibTextureCompiler<'a> {
-    pub rl: &'a mut RaylibHandle,
-    pub thread: &'a RaylibThread,
+    rl: &'a mut RaylibHandle,
+    thread: &'a RaylibThread,
 }
 
 impl<'a> RaylibTextureCompiler<'a> {
@@ -857,10 +846,52 @@ impl<'a> ITextureCompiler for RaylibTextureCompiler<'a> {
     }
 }
 
+#[derive(Debug)]
+pub struct RaylibKeyboardReader<'a> {
+    rl: &'a mut RaylibHandle,
+}
+
+impl<'a> IKeyboardReader for RaylibKeyboardReader<'a> {
+    fn is_up_key_pressed(&mut self) -> bool {
+        self.rl.is_key_down(KeyboardKey::KEY_UP)
+    }
+
+    fn is_down_key_pressed(&mut self) -> bool {
+        self.rl.is_key_down(KeyboardKey::KEY_DOWN)
+    }
+
+    fn is_left_key_pressed(&mut self) -> bool {
+        self.rl.is_key_down(KeyboardKey::KEY_LEFT)
+    }
+
+    fn is_right_key_pressed(&mut self) -> bool {
+        self.rl.is_key_down(KeyboardKey::KEY_RIGHT)
+    }
+
+    fn is_backspace_key_pressed(&mut self) -> bool {
+        self.rl.is_key_down(KeyboardKey::KEY_BACKSPACE)
+    }
+
+    fn is_delete_key_pressed(&mut self) -> bool {
+        self.rl.is_key_down(KeyboardKey::KEY_DELETE)
+    }
+
+    fn is_enter_key_pressed(&mut self) -> bool {
+        self.rl.is_key_down(KeyboardKey::KEY_ENTER)
+    }
+
+    fn poll_char_press(&mut self) -> Option<char> {
+        self.rl.get_char_pressed()
+    }
+}
+
+#[derive(Debug)]
 pub struct RaylibRenderer<'a> {
-    pub rl: &'a mut RaylibHandle,
-    pub thread: &'a RaylibThread,
-    pub draw_layer_pool: &'a mut Vec<RenderTexture2D>,
+    rl: &'a mut RaylibHandle,
+    thread: &'a RaylibThread,
+    draw_layer_pool: &'a mut Vec<RenderTexture2D>,
+    output_texture: &'a mut RenderTexture2D,
+    secs_since_cursor_moved: &'a mut f32,
 }
 
 impl<'a> RaylibRenderer<'a> {
@@ -869,52 +900,58 @@ impl<'a> RaylibRenderer<'a> {
 
     /// thickness for debug polygon line outlines
     const DEBUG_OUTLINE_THICKNESS: f32 = 3.0;
-}
 
-impl<'a> IRenderer for RaylibRenderer<'a> {
-    type Texture = RenderTexture2D;
-    type Font = Font;
-    type Color = Color;
-    type Rectangle = Rectangle;
-    type Vector2 = Vector2;
-    type ConvexShape = ConvexHull<Vector2>;
+    // cheat buffer constants
+    const CHEAT_SPACING: f32 = 1.0;
+    const CHEAT_PADDING: f32 = 4.0;
+    const CHEAT_BACKGROUND: Color = Color::BLACK;
+    const CHEAT_BLINK_TIME: f32 = 0.5;
+    const CHEAT_FOREGROUND: Color = Color {
+        r: 0,
+        g: 240,
+        b: 0,
+        a: 255,
+    };
+
+    /// how many seconds after inactivity to hide the cursor
+    const HIDE_CURSOR_SECS: f32 = 5.0;
 
     fn draw_board(
-        &mut self,
+        rl: &mut RaylibHandle,
+        thread: &RaylibThread,
+        draw_layer_pool: &mut Vec<RenderTexture2D>,
         board: &crate::board::BoardManager<
             Color,
             Rectangle,
             Vector2,
             ConvexHull<Vector2>,
-            Self::Texture,
-            Self::Font,
+            RenderTexture2D,
+            Font,
         >,
-        assets: &GlobalAssets<Self::Texture>,
-        output_texture: &mut Self::Texture,
+        assets: &GlobalAssets<RenderTexture2D, Font>,
+        output_texture: &mut RenderTexture2D,
     ) {
         let output_dimensions = board.dimensions();
         for _ in 0..board
             .draw_layer_count()
-            .saturating_sub(self.draw_layer_pool.len())
+            .saturating_sub(draw_layer_pool.len())
         {
-            self.draw_layer_pool.push(
-                self.rl
-                    .load_render_texture(
-                        self.thread,
-                        output_dimensions.x() as u32,
-                        output_dimensions.y() as u32,
-                    )
-                    .unwrap(),
+            draw_layer_pool.push(
+                rl.load_render_texture(
+                    thread,
+                    output_dimensions.x() as u32,
+                    output_dimensions.y() as u32,
+                )
+                .unwrap(),
             );
         }
 
-        let mut pool_iter = self.draw_layer_pool.iter_mut();
+        let mut pool_iter = draw_layer_pool.iter_mut();
         let mut draw_layers = BTreeMap::from_iter(board.draw_layer_iter().map(|l| {
             let mut layer = pool_iter.next().unwrap();
-            self.rl
-                .draw_texture_mode(self.thread, &mut layer, |mut painter| {
-                    painter.clear_background(Color::BLANK)
-                });
+            rl.draw_texture_mode(thread, &mut layer, |mut painter| {
+                painter.clear_background(Color::BLANK)
+            });
             (l, layer)
         }));
 
@@ -924,7 +961,7 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
 
         for (texture, collider_opt, transform, layer) in board.texture_draw_iter() {
             let render_texture = draw_layers.get_mut(&layer).unwrap();
-            let mut painter = self.rl.begin_texture_mode(self.thread, render_texture);
+            let mut painter = rl.begin_texture_mode(thread, render_texture);
 
             // draw texture
             let src_rect = Rectangle {
@@ -983,80 +1020,65 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
             }
         }
 
-        self.rl
-            .draw_texture_mode(self.thread, output_texture, |mut painter| {
-                painter.clear_background(board.color);
+        rl.draw_texture_mode(thread, output_texture, |mut painter| {
+            // draw regular layers
+            for layer in draw_layers.values() {
+                let src_rect = Rectangle {
+                    x: 0.0,
+                    y: 0.0,
+                    width: layer.width() as f32,
+                    height: -layer.height() as f32,
+                };
+                painter.draw_texture_rec(
+                    &layer,
+                    src_rect,
+                    Vector2::from_xy(0.0, 0.0),
+                    Color::WHITE,
+                );
+            }
 
-                // draw regular layers
-                for layer in draw_layers.values() {
-                    let src_rect = Rectangle {
-                        x: 0.0,
-                        y: 0.0,
-                        width: layer.width() as f32,
-                        height: -layer.height() as f32,
-                    };
-                    painter.draw_texture_rec(
-                        &layer,
-                        src_rect,
-                        Vector2::from_xy(0.0, 0.0),
-                        Color::WHITE,
-                    );
-                }
+            // draw grabbed elements (again)
+            for (texture, collider_opt, transform) in board.held_item_draw_iter() {
+                let src_rect = Rectangle {
+                    x: 0.0,
+                    y: 0.0,
+                    width: texture.width() as f32,
+                    height: -texture.height() as f32,
+                };
+                let dst_rect = Rectangle::from_position_dimension(
+                    transform.position,
+                    src_rect.dimensions::<Vector2>().neg_y(),
+                );
+                painter.draw_texture_pro(
+                    &texture,
+                    src_rect,
+                    dst_rect,
+                    dst_rect.dimensions::<Vector2>().scaled(0.5),
+                    transform.angle.to_degrees(),
+                    Color::WHITE,
+                );
 
-                // draw grabbed elements (again)
-                for (texture, collider_opt, transform) in board.held_item_draw_iter() {
-                    let src_rect = Rectangle {
-                        x: 0.0,
-                        y: 0.0,
-                        width: texture.width() as f32,
-                        height: -texture.height() as f32,
-                    };
-                    let dst_rect = Rectangle::from_position_dimension(
-                        transform.position,
-                        src_rect.dimensions::<Vector2>().neg_y(),
-                    );
-                    painter.draw_texture_pro(
-                        &texture,
-                        src_rect,
-                        dst_rect,
-                        dst_rect.dimensions::<Vector2>().scaled(0.5),
-                        transform.angle.to_degrees(),
-                        Color::WHITE,
-                    );
+                // draw colliders
+                if let Some(colliders) = collider_opt {
+                    for collider in colliders {
+                        let color = if let Some(c) = collision_layers.get(&collider.layer) {
+                            *c
+                        } else {
+                            let hue = collision_layer_number / board.collision_layer_count() as f32;
+                            collision_layer_number += 1.0;
+                            let color = Color::color_from_hsv(hue, 1.0, 1.0);
+                            collision_layers.insert(collider.layer, color);
+                            color
+                        };
 
-                    // draw colliders
-                    if let Some(colliders) = collider_opt {
-                        for collider in colliders {
-                            let color = if let Some(c) = collision_layers.get(&collider.layer) {
-                                *c
-                            } else {
-                                let hue =
-                                    collision_layer_number / board.collision_layer_count() as f32;
-                                collision_layer_number += 1.0;
-                                let color = Color::color_from_hsv(hue, 1.0, 1.0);
-                                collision_layers.insert(collider.layer, color);
-                                color
-                            };
-
-                            let shapes = board.get_collision_shape(collider.shape).unwrap();
-                            for shape in shapes.0.iter() {
-                                let points = shape.points();
-                                let mut point_iter = shape.points().iter().peekable();
-                                while let (Some(p1), Some(p2)) =
-                                    (point_iter.next(), point_iter.peek())
-                                {
-                                    let p1 = transform.apply_to_point(*p1);
-                                    let p2 = transform.apply_to_point(**p2);
-                                    painter.draw_line_ex(
-                                        p1,
-                                        p2,
-                                        Self::DEBUG_OUTLINE_THICKNESS,
-                                        Color::BLACK,
-                                    );
-                                    painter.draw_line_ex(p1, p2, Self::DEBUG_THICKNESS, color);
-                                }
-                                let p1 = transform.apply_to_point(*points.first().unwrap());
-                                let p2 = transform.apply_to_point(*points.last().unwrap());
+                        let shapes = board.get_collision_shape(collider.shape).unwrap();
+                        for shape in shapes.0.iter() {
+                            let points = shape.points();
+                            let mut point_iter = shape.points().iter().peekable();
+                            while let (Some(p1), Some(p2)) = (point_iter.next(), point_iter.peek())
+                            {
+                                let p1 = transform.apply_to_point(*p1);
+                                let p2 = transform.apply_to_point(**p2);
                                 painter.draw_line_ex(
                                     p1,
                                     p2,
@@ -1065,540 +1087,331 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
                                 );
                                 painter.draw_line_ex(p1, p2, Self::DEBUG_THICKNESS, color);
                             }
+                            let p1 = transform.apply_to_point(*points.first().unwrap());
+                            let p2 = transform.apply_to_point(*points.last().unwrap());
+                            painter.draw_line_ex(
+                                p1,
+                                p2,
+                                Self::DEBUG_OUTLINE_THICKNESS,
+                                Color::BLACK,
+                            );
+                            painter.draw_line_ex(p1, p2, Self::DEBUG_THICKNESS, color);
                         }
                     }
                 }
-
-                // draw player hands
-                for (texture, position, tint) in board.player_draw_iter(&assets) {
-                    let src_rect = Rectangle {
-                        x: 0.0,
-                        y: 0.0,
-                        width: texture.width() as f32,
-                        height: -texture.height() as f32,
-                    };
-                    let dst_rect = Rectangle::from_position_dimension(
-                        position,
-                        src_rect.dimensions::<Vector2>().neg_y(),
-                    );
-                    painter.draw_texture_pro(
-                        &texture,
-                        src_rect,
-                        dst_rect,
-                        dst_rect.dimensions::<Vector2>().scaled(0.5),
-                        0.0,
-                        tint,
-                    );
-                }
-
-                // draw snap circles
-                for (position, radius) in board.debug_snap_circle_draw_iter() {
-                    let segments = (radius.ceil() as i32 * 2).min(24);
-                    painter.draw_ring(
-                        position,
-                        (radius - Self::DEBUG_OUTLINE_THICKNESS * 0.5).max(0.0),
-                        radius + Self::DEBUG_OUTLINE_THICKNESS * 0.5,
-                        0.0,
-                        360.0,
-                        segments,
-                        Color::BLACK,
-                    );
-                    painter.draw_ring(
-                        position,
-                        (radius - Self::DEBUG_THICKNESS * 0.5).max(0.0),
-                        radius + Self::DEBUG_THICKNESS * 0.5,
-                        0.0,
-                        360.0,
-                        segments,
-                        Color::WHITE,
-                    );
-                }
-            });
-    }
-}
-
-/// a simple text buffer for running lua commands
-#[derive(Debug)]
-pub struct TextCommandBuffer {
-    /// command history
-    history: VecDeque<String>,
-
-    /// index in command history
-    history_index: usize,
-
-    /// command being entered now
-    command: String,
-
-    /// byte index in the command
-    /// invariant: index always lies on a valid utf8 char boundary
-    index: usize,
-
-    /// the font used for this thinggy
-    font: Font,
-
-    /// the current frame used to calculate cursor blinking effects
-    blink_frame: u32,
-
-    /// frame-based cooldown for holding up key
-    up_cooldown: u32,
-
-    /// frame-based cooldown for holding down key
-    down_cooldown: u32,
-
-    /// frame-based cooldown for holding left key
-    left_cooldown: u32,
-
-    /// frame-based cooldown for holding right key
-    right_cooldown: u32,
-
-    /// frame-based cooldown for holding delete key
-    del_cooldown: u32,
-
-    /// frame-based cooldown for holding backspace key
-    bs_cooldown: u32,
-}
-
-impl TextCommandBuffer {
-    /// the default font, should be monospace
-    pub const DEFAULT_FONT_DATA: &[u8] = include_bytes!("lucon.ttf");
-    pub const DEFAULT_FONT_FILETYPE: &str = ".ttf";
-    pub const MAX_HISTORY: usize = 250;
-
-    const BLINK_FRAMES: u32 = FRAME_RATE / 2;
-    const SPAM_COOLDOWN: u32 = FRAME_RATE / 12;
-
-    const TEXT_SIZE: f32 = 28.0;
-    const SPACING: f32 = 1.0;
-    const PADDING: f32 = 4.0;
-    const BACKGROUND_COLOR: Color = Color::BLACK;
-    const FOREGROUND_COLOR: Color = Color {
-        r: 0,
-        g: 240,
-        b: 0,
-        a: 255,
-    };
-
-    pub fn new(rl: &mut RaylibHandle, thread: &RaylibThread) -> Self {
-        let font = rl
-            .load_font_from_memory(
-                thread,
-                Self::DEFAULT_FONT_FILETYPE,
-                Self::DEFAULT_FONT_DATA,
-                Self::TEXT_SIZE as i32,
-                None,
-            )
-            .expect(&format!("Unable to load command buffer font"));
-
-        Self {
-            history: VecDeque::with_capacity(Self::MAX_HISTORY),
-            history_index: 0,
-            command: String::new(),
-            index: 0,
-            font,
-            blink_frame: 0,
-            up_cooldown: 0,
-            down_cooldown: 0,
-            left_cooldown: 0,
-            right_cooldown: 0,
-            del_cooldown: 0,
-            bs_cooldown: 0,
-        }
-    }
-
-    /// decrements all cooldowns
-    fn decrement_cooldowns(&mut self) {
-        self.up_cooldown = self.up_cooldown.saturating_sub(1);
-        self.down_cooldown = self.down_cooldown.saturating_sub(1);
-        self.left_cooldown = self.left_cooldown.saturating_sub(1);
-        self.right_cooldown = self.right_cooldown.saturating_sub(1);
-        self.del_cooldown = self.del_cooldown.saturating_sub(1);
-        self.bs_cooldown = self.bs_cooldown.saturating_sub(1);
-    }
-
-    /// increments the cursor
-    fn increment_cursor(&mut self) {
-        if let Some(ch) = self.command[self.index..].chars().next() {
-            self.index += ch.len_utf8();
-        }
-    }
-
-    /// decrements the cursor
-    fn decrement_cursor(&mut self) {
-        self.index = self.index.saturating_sub(1);
-
-        while self.index > 0 && !self.command.is_char_boundary(self.index) {
-            self.index -= 1;
-        }
-    }
-
-    /// gets the currently entered command
-    pub fn command(&self) -> &str {
-        &self.command
-    }
-
-    /// gets the character at the cursor if it exists
-    fn cursor_str(&self) -> Option<&str> {
-        if self.index == self.command.len() {
-            return None;
-        }
-
-        let mut chars = self.command[self.index..].chars();
-
-        chars.next().map(|c| {
-            let end_idx = self.index + c.len_utf8();
-            &self.command[self.index..end_idx]
-        })
-    }
-
-    /// updates the buffer with keyboard inputs
-    pub fn update(&mut self, rl: &mut RaylibHandle) -> Option<String> {
-        self.blink_frame = self.blink_frame.wrapping_add(1);
-        self.decrement_cooldowns();
-
-        // history traversal
-        if rl.is_key_down(KeyboardKey::KEY_UP) {
-            if self.up_cooldown <= 0 {
-                self.blink_frame = 0;
-                self.up_cooldown = Self::SPAM_COOLDOWN;
-
-                self.history_index = self.history_index.saturating_sub(1);
-                if let Some(hist_command) = self.history.get(self.history_index) {
-                    self.command = hist_command.clone();
-                } else {
-                    self.command = String::new();
-                }
-                self.index = self.command.len();
-            }
-        } else {
-            self.up_cooldown = 0;
-        }
-        if rl.is_key_down(KeyboardKey::KEY_DOWN) {
-            if self.down_cooldown <= 0 {
-                self.blink_frame = 0;
-                self.down_cooldown = Self::SPAM_COOLDOWN;
-
-                if self.history_index < self.history.len().saturating_sub(1) {
-                    self.history_index += 1;
-                    self.command = self.history[self.history_index].clone();
-                }
-                self.index = self.command.len();
-            }
-        } else {
-            self.down_cooldown = 0;
-        }
-
-        // handle normal character entry
-        while let Some(ch) = rl.get_char_pressed() {
-            self.blink_frame = 0;
-
-            self.command.insert(self.index, ch);
-            self.index += 1;
-        }
-
-        // handle movement
-        if rl.is_key_down(KeyboardKey::KEY_LEFT) {
-            if self.left_cooldown <= 0 {
-                self.blink_frame = 0;
-                self.left_cooldown = Self::SPAM_COOLDOWN;
-
-                self.decrement_cursor();
-            }
-        } else {
-            self.left_cooldown = 0;
-        }
-        if rl.is_key_down(KeyboardKey::KEY_RIGHT) {
-            if self.right_cooldown <= 0 {
-                self.blink_frame = 0;
-                self.right_cooldown = Self::SPAM_COOLDOWN;
-
-                self.increment_cursor();
-            }
-        } else {
-            self.right_cooldown = 0;
-        }
-
-        // handle deletion
-        if rl.is_key_down(KeyboardKey::KEY_BACKSPACE) {
-            if self.bs_cooldown <= 0 {
-                self.blink_frame = 0;
-                self.bs_cooldown = Self::SPAM_COOLDOWN;
-
-                self.decrement_cursor();
-                if let Some((idx, _)) = self.command.char_indices().nth(self.index) {
-                    self.command.remove(idx);
-                }
-            }
-        } else {
-            self.bs_cooldown = 0;
-        }
-        if rl.is_key_down(KeyboardKey::KEY_DELETE) {
-            if self.del_cooldown <= 0 {
-                self.blink_frame = 0;
-                self.del_cooldown = Self::SPAM_COOLDOWN;
-
-                if let Some((idx, _)) = self.command.char_indices().nth(self.index) {
-                    self.command.remove(idx);
-                }
-            }
-        } else {
-            self.del_cooldown = 0;
-        }
-
-        // handle the enter key
-        if rl.is_key_pressed(KeyboardKey::KEY_ENTER) {
-            if self.command.is_empty() {
-                return None;
             }
 
-            self.blink_frame = 0;
-            // adjust history
-            if self.history.len() >= Self::MAX_HISTORY {
-                self.history.pop_front();
+            // draw player hands
+            for (texture, position, tint) in board.player_draw_iter(&assets) {
+                let src_rect = Rectangle {
+                    x: 0.0,
+                    y: 0.0,
+                    width: texture.width() as f32,
+                    height: -texture.height() as f32,
+                };
+                let dst_rect = Rectangle::from_position_dimension(
+                    position,
+                    src_rect.dimensions::<Vector2>().neg_y(),
+                );
+                painter.draw_texture_pro(
+                    &texture,
+                    src_rect,
+                    dst_rect,
+                    dst_rect.dimensions::<Vector2>().scaled(0.5),
+                    0.0,
+                    tint,
+                );
             }
-            self.history.push_back(self.command.clone());
-            self.history_index = self.history.len();
 
-            self.index = 0;
-            let mut output = String::new();
-            std::mem::swap(&mut output, &mut self.command);
-            Some(output)
-        } else {
-            None
-        }
+            // draw snap circles
+            for (position, radius) in board.debug_snap_circle_draw_iter() {
+                let segments = (radius.ceil() as i32 * 2).min(24);
+                painter.draw_ring(
+                    position,
+                    (radius - Self::DEBUG_OUTLINE_THICKNESS * 0.5).max(0.0),
+                    radius + Self::DEBUG_OUTLINE_THICKNESS * 0.5,
+                    0.0,
+                    360.0,
+                    segments,
+                    Color::BLACK,
+                );
+                painter.draw_ring(
+                    position,
+                    (radius - Self::DEBUG_THICKNESS * 0.5).max(0.0),
+                    radius + Self::DEBUG_THICKNESS * 0.5,
+                    0.0,
+                    360.0,
+                    segments,
+                    Color::WHITE,
+                );
+            }
+        });
     }
 
-    /// draws to the screen at the given position
-    pub fn draw(&self, position: Vector2, painter: &mut RaylibDrawHandle) {
-        if self.command.is_empty() {
+    fn draw_cheat_buffer(
+        rl: &mut RaylibHandle,
+        thread: &RaylibThread,
+        buffer: &CheatBuffer,
+        assets: &GlobalAssets<RenderTexture2D, Font>,
+        output_texture: &mut RenderTexture2D,
+    ) {
+        let position = Vector2 {
+            x: 0.0,
+            y: output_texture.height() as f32
+                - GlobalAssets::<RenderTexture2D, Font>::CHEAT_BUFFER_FONT_SIZE
+                - 2.0 * Self::CHEAT_PADDING,
+        };
+        let mut painter = rl.begin_texture_mode(thread, output_texture);
+
+        if buffer.command().is_empty() {
             return;
         }
 
-        let text_dimensions =
-            self.font
-                .measure_text(&self.command, Self::TEXT_SIZE as f32, Self::SPACING);
-        let cursor_position = self
-            .font
+        let text_dimensions = assets.cheat_buffer_font.measure_text(
+            buffer.command(),
+            GlobalAssets::<RenderTexture2D, Font>::CHEAT_BUFFER_FONT_SIZE as f32,
+            Self::CHEAT_SPACING,
+        );
+        let cursor_position = assets
+            .cheat_buffer_font
             .measure_text(
-                &self.command[0..self.index],
-                Self::TEXT_SIZE as f32,
-                Self::SPACING,
+                &buffer.command()[0..buffer.cursor_index()],
+                GlobalAssets::<RenderTexture2D, Font>::CHEAT_BUFFER_FONT_SIZE,
+                Self::CHEAT_SPACING,
             )
             .with_y(0.0)
             .add(position);
-        let cursor_dimensions = self
-            .font
-            .measure_text(&"$", Self::TEXT_SIZE as f32, Self::SPACING);
+        let cursor_dimensions = assets.cheat_buffer_font.measure_text(
+            &"$",
+            GlobalAssets::<RenderTexture2D, Font>::CHEAT_BUFFER_FONT_SIZE as f32,
+            Self::CHEAT_SPACING,
+        );
 
         let cursor_rect = Rectangle::from_position_dimension(cursor_position, cursor_dimensions);
-        let big_cursor_rect = cursor_rect.expand_vertical(Self::PADDING);
+        let big_cursor_rect = cursor_rect.expand_vertical(Self::CHEAT_PADDING);
         let background_rect = Rectangle::from_position_dimension(position, text_dimensions)
-            .expand(Self::PADDING)
+            .expand(Self::CHEAT_PADDING)
             .expand_right(big_cursor_rect.width);
 
-        let should_draw_cursor = self.blink_frame % (Self::BLINK_FRAMES * 2) < Self::BLINK_FRAMES;
+        let should_draw_cursor =
+            buffer.secs_since_input() % (Self::CHEAT_BLINK_TIME * 2.0) < Self::CHEAT_BLINK_TIME;
 
-        painter.draw_rectangle_rec(background_rect, Self::BACKGROUND_COLOR);
+        painter.draw_rectangle_rec(background_rect, Self::CHEAT_BACKGROUND);
         if should_draw_cursor {
-            painter.draw_rectangle_rec(big_cursor_rect, Self::FOREGROUND_COLOR);
+            painter.draw_rectangle_rec(big_cursor_rect, Self::CHEAT_FOREGROUND);
         }
 
         painter.draw_text_ex(
-            &self.font,
-            &self.command,
+            &assets.cheat_buffer_font,
+            buffer.command(),
             position,
-            Self::TEXT_SIZE,
-            Self::SPACING,
-            Self::FOREGROUND_COLOR,
+            GlobalAssets::<RenderTexture2D, Font>::CHEAT_BUFFER_FONT_SIZE,
+            Self::CHEAT_SPACING,
+            Self::CHEAT_FOREGROUND,
         );
 
         if should_draw_cursor {
-            painter.draw_rectangle_rec(cursor_rect, Self::FOREGROUND_COLOR);
-            if let Some(cursor_str) = self.cursor_str() {
+            painter.draw_rectangle_rec(cursor_rect, Self::CHEAT_FOREGROUND);
+            if let Some(cursor_str) = buffer.cursor_str() {
                 painter.draw_text_ex(
-                    &self.font,
+                    &assets.cheat_buffer_font,
                     cursor_str,
                     cursor_rect.position::<Vector2>(),
-                    Self::TEXT_SIZE,
-                    Self::SPACING,
-                    Self::BACKGROUND_COLOR,
+                    GlobalAssets::<RenderTexture2D, Font>::CHEAT_BUFFER_FONT_SIZE,
+                    Self::CHEAT_SPACING,
+                    Self::CHEAT_BACKGROUND,
                 );
             }
         }
     }
 }
 
-/// runs a game editor from the given project path
-pub async fn run_game(project_path: &Path) {
-    // initialize game resources
-    let board_dimensions = Vector2::from_xy(1920.0, 1200.0);
-    let board =
-        BoardManager::<Color, Rectangle, Vector2, ConvexHull<Vector2>, RenderTexture2D, Font>::new(
-            board_dimensions,
-        );
-    let board_cell = Rc::new(RefCell::new(board));
+impl<'a> IRenderer for RaylibRenderer<'a> {
+    type Texture = RenderTexture2D;
+    type Font = Font;
+    type Color = Color;
+    type Rectangle = Rectangle;
+    type Vector2 = Vector2;
+    type ConvexShape = ConvexHull<Vector2>;
 
-    // initialize input state
-    let mut input_state = InputState::default();
-
-    // initialize raylib
-    callbacks::set_trace_log_callback(|level, msg| match level {
-        TraceLogLevel::LOG_WARNING => println!("{msg}"),
-        TraceLogLevel::LOG_ERROR => eprintln!("{msg}"),
-        TraceLogLevel::LOG_FATAL => eprintln!("{msg}"),
-        _ => (),
-    })
-    .expect("unable to set trace log level");
-    let mut draw_layer_pool = Vec::new();
-    let (mut rl, thread) = raylib::init()
-        .vsync()
-        .title("Gatheround Board Game Engine")
-        //.fullscreen()
-        .size(
-            board_dimensions.x() as i32 - 100,
-            board_dimensions.y() as i32 - 100,
-        )
-        .resizable()
-        .build();
-    rl.set_exit_key(None);
-    rl.set_target_fps(FRAME_RATE);
-    let mut output_texture = rl
-        .load_render_texture(
-            &thread,
-            board_cell.borrow().dimensions().x() as u32,
-            board_cell.borrow().dimensions().y() as u32,
-        )
-        .expect("Unable to create board render layer");
-    let global_assets = GlobalAssets::new(&mut RaylibTextureCompiler {
-        rl: &mut rl,
-        thread: &thread,
-    });
-
-    let mut command_buffer = TextCommandBuffer::new(&mut rl, &thread);
-    let rl_cell = Rc::new(RefCell::new(rl));
-    let thread_cell = Rc::new(RefCell::new(thread));
-
-    // get and run init function
-    let lua = get_game_lua_instance(&project_path, &board_cell, &rl_cell, &thread_cell);
-
-    // load user script
-    let main_path = project_path.join(MAIN_LUA_FILE);
-    let script_content = std::fs::read_to_string(&main_path)
-        .expect(&format!("Unable to read lua file '{:#?}'.", &main_path));
-    let main_chunk = lua.load(script_content);
-
-    let lua_update_callback = match main_chunk.eval::<mlua::Function>() {
-        Ok(f) => f,
-        Err(msg) => panic!(
-            "Failed to run lua file '{:#?}':\n{}",
-            &main_path,
-            msg.to_string()
-        ),
-    };
-
-    // initialize server
-    let server = GameServer::run_new().await;
-
-    // initialize ui
-    const CURSOR_SHOW_FRAMES: u32 = FRAME_RATE * 5;
-    let mut frames_until_hide_ui: u32 = CURSOR_SHOW_FRAMES;
-
-    // run main loop
-    loop {
-        // detect window close
-        if rl_cell.borrow_mut().window_should_close() {
-            return;
+    fn draw_app(
+        &mut self,
+        board: &BoardManager<
+            Self::Color,
+            Self::Rectangle,
+            Self::Vector2,
+            Self::ConvexShape,
+            Self::Texture,
+            Self::Font,
+        >,
+        cheat_buffer: &CheatBuffer,
+        assets: &GlobalAssets<Self::Texture, Self::Font>,
+    ) {
+        // handle cursor hiding/showing
+        if self.rl.get_mouse_delta() == Vector2::origin() {
+            *self.secs_since_cursor_moved += 1.0 / TARGET_FRAME_RATE as f32;
+        } else {
+            *self.secs_since_cursor_moved = 0.0;
+        }
+        let should_show_ui = *self.secs_since_cursor_moved < Self::HIDE_CURSOR_SECS;
+        match (self.rl.is_cursor_hidden(), should_show_ui) {
+            (true, true) => self.rl.show_cursor(),
+            (true, false) => (),
+            (false, true) => (),
+            (false, false) => self.rl.hide_cursor(),
         }
 
-        // show or hide cursor, if relevant
-        {
-            let mut rl = rl_cell.borrow_mut();
-            if rl.get_mouse_delta() == Vector2::origin() {
-                frames_until_hide_ui = frames_until_hide_ui.saturating_sub(1);
-            } else {
-                frames_until_hide_ui = CURSOR_SHOW_FRAMES;
-            }
-
-            let should_show_ui = frames_until_hide_ui > 0;
-            match (rl.is_cursor_hidden(), should_show_ui) {
-                (true, true) => rl.show_cursor(),
-                (true, false) => (),
-                (false, true) => (),
-                (false, false) => rl.hide_cursor(),
-            }
-        }
-
-        // poll for new players
-        {
-            for player in server.poll_new_players() {
-                println!("new join");
-                if let Err(err) = board_cell.borrow_mut().add_player(player) {
-                    eprintln!("{err}");
-                }
-                input_state.add_player(player);
-            }
-        }
-
-        // run update cycle
-        {
-            let update_table = input_state.update(&lua, server.poll_inputs());
-            if let Err(err) = lua_update_callback.call::<MultiValue>(update_table) {
-                eprintln!("Got runtime error: {err}");
-            }
-        }
-
-        // update commands
-        {
-            let mut rl = rl_cell.borrow_mut();
-            if let Some(cmd) = command_buffer.update(&mut rl) {
-                drop(rl);
-
-                match lua.load(cmd).eval::<mlua::MultiValue>() {
-                    Ok(v) => println!("GOTVALUE FROM COMMAND!: {:?}", v),
-                    Err(e) => {
-                        eprintln!("GOT ERROR FROM COMMAND! NOT YET SURE WHAT TO DO WITH IT:\n{e}")
-                    }
-                }
-            }
-        }
-
-        // run draw cycle
-        {
-            let mut rl = rl_cell.borrow_mut();
-            let thread = thread_cell.borrow();
-            let board = board_cell.borrow();
-
-            let mut rl_renderer = RaylibRenderer {
-                rl: &mut rl,
-                thread: &thread,
-                draw_layer_pool: &mut draw_layer_pool,
-            };
-            rl_renderer.draw_board(&board, &global_assets, &mut output_texture);
-
-            let padding = {
-                Vector2::from_xy(
-                    rl.get_render_width() as f32 - board.dimensions().x(),
-                    rl.get_render_height() as f32 - board.dimensions().y(),
-                )
-                .scaled(0.5)
-            };
-
-            rl.draw(&thread, |mut painter| {
-                painter.clear_background(board.color);
-
-                let src_rect =
-                    Rectangle::from_position_dimension((0.0, 0.0), board_dimensions.neg_y());
-                let dst_rect = Rectangle::from_position_dimension(padding, board_dimensions);
-                painter.draw_texture_pro(
-                    &output_texture,
-                    src_rect,
-                    dst_rect,
-                    Vector2::from_xy(0.0, 0.0),
-                    0.0,
-                    Color::WHITE,
-                );
-
-                command_buffer.draw(Vector2::from_xy(40.0, 40.0), &mut painter);
+        // draw to screen
+        self.rl
+            .draw_texture_mode(self.thread, self.output_texture, |mut painter| {
+                painter.clear_background(Color::BLANK);
             });
+        Self::draw_board(
+            self.rl,
+            self.thread,
+            self.draw_layer_pool,
+            board,
+            assets,
+            self.output_texture,
+        );
+        Self::draw_cheat_buffer(
+            self.rl,
+            self.thread,
+            cheat_buffer,
+            assets,
+            self.output_texture,
+        );
+
+        let padding = {
+            Vector2::from_xy(
+                self.rl.get_render_width() as f32 - board.dimensions().x(),
+                self.rl.get_render_height() as f32 - board.dimensions().y(),
+            )
+            .scaled(0.5)
+        };
+        let src_rect = Rectangle::from_position_dimension((0.0, 0.0), board.dimensions().neg_y());
+        let dst_rect = Rectangle::from_position_dimension(padding, board.dimensions());
+
+        self.rl.draw(self.thread, |mut painter| {
+            painter.clear_background(board.color);
+            painter.draw_texture_pro(
+                &self.output_texture,
+                src_rect,
+                dst_rect,
+                Vector2::from_xy(0.0, 0.0),
+                0.0,
+                Color::WHITE,
+            );
+        });
+    }
+}
+
+#[derive(Debug)]
+pub struct RaylibPlatform {
+    rl: RaylibHandle,
+    thread: RaylibThread,
+    draw_layer_pool: Vec<RenderTexture2D>,
+    output_texture: RenderTexture2D,
+    secs_since_cursor_moved: f32,
+}
+
+impl RaylibPlatform {
+    /// instantiates the new platform assuming the given board dimensions
+    pub fn new(board_dimensions: Vector2) -> Self {
+        callbacks::set_trace_log_callback(|level, msg| match level {
+            TraceLogLevel::LOG_WARNING => println!("{msg}"),
+            TraceLogLevel::LOG_ERROR => eprintln!("{msg}"),
+            TraceLogLevel::LOG_FATAL => eprintln!("{msg}"),
+            _ => (),
+        })
+        .expect("unable to set trace log level");
+        let draw_layer_pool = Vec::new();
+        let (mut rl, thread) = raylib::init()
+            .vsync()
+            .title("Gatheround Board Game Engine")
+            //.fullscreen()
+            .size(
+                board_dimensions.x() as i32 - 100,
+                board_dimensions.y() as i32 - 100,
+            )
+            .resizable()
+            .build();
+        rl.set_exit_key(None);
+        rl.set_target_fps(TARGET_FRAME_RATE);
+        let output_texture = rl
+            .load_render_texture(
+                &thread,
+                board_dimensions.x as u32,
+                board_dimensions.y as u32,
+            )
+            .expect("Unable to create board render layer");
+
+        Self {
+            rl,
+            thread,
+            draw_layer_pool,
+            output_texture,
+            secs_since_cursor_moved: 0.0,
         }
+    }
+}
+
+impl IPlatform for RaylibPlatform {
+    type Texture = RenderTexture2D;
+    type Font = Font;
+    type Color = Color;
+    type Rectangle = Rectangle;
+    type Vector2 = Vector2;
+    type ConvexShape = ConvexHull<Vector2>;
+    type KeyboardReader<'a> = RaylibKeyboardReader<'a>;
+    type Renderer<'a> = RaylibRenderer<'a>;
+    type TextureCompiler<'a> = RaylibTextureCompiler<'a>;
+
+    fn should_close(&mut self) -> bool {
+        self.rl.window_should_close()
+    }
+
+    fn toggle_fullscreen(&mut self) {
+        self.rl.toggle_fullscreen();
+    }
+
+    fn delta_time(&mut self) -> f32 {
+        1.0 / TARGET_FRAME_RATE as f32
+    }
+
+    fn use_renderer<F, O>(&mut self, action: F) -> O
+    where
+        F: for<'a> FnOnce(Self::Renderer<'a>) -> O
+    {
+        let renderer = RaylibRenderer {
+            rl: &mut self.rl,
+            thread: &self.thread,
+            draw_layer_pool: &mut self.draw_layer_pool,
+            output_texture: &mut self.output_texture,
+            secs_since_cursor_moved: &mut self.secs_since_cursor_moved,
+        };
+
+        action(renderer)
+    }
+
+    fn use_texture_compiler<F, O>(&mut self, action: F) -> O
+    where
+        F: for<'a> FnOnce(Self::TextureCompiler<'a>) -> O
+    {
+        let texture_compiler = RaylibTextureCompiler {
+            rl: &mut self.rl,
+            thread: &self.thread,
+        };
+
+        action(texture_compiler)
+    }
+
+    fn use_keyboard_reader<F, O>(&mut self, action: F) -> O
+    where
+        F: for<'a> FnOnce(Self::KeyboardReader<'a>) -> O
+    {
+        let keyboard_reader = RaylibKeyboardReader { rl: &mut self.rl };
+
+        action(keyboard_reader)
     }
 }

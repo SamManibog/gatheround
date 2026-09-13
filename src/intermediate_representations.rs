@@ -1,10 +1,13 @@
+use std::fmt::Debug;
+
 use mlua::{Table, Value};
 
 use crate::{
     color::{IColor, color_from_lua_value},
     ecs::EntityTrait,
     geometry::{
-        CollisionShape, IConvexShape, IRect, IVec2, RigidTransform, finite_vec2_from_lua_table, finite_vec2_from_lua_value, valid_finite_rect_from_lua_table
+        CollisionShape, IConvexShape, IRect, IVec2, RigidTransform, finite_vec2_from_lua_table,
+        finite_vec2_from_lua_value, valid_finite_rect_from_lua_table,
     },
     lua::{FromLuaTable, FromLuaValue, finite_f32_from_lua_value, vector_from_lua_value},
     resources::CollisionShapeEntity,
@@ -571,7 +574,33 @@ impl<C: IColor, R: IRect, V: IVec2> FromLuaTable for VisualComponent<C, R, V> {
 #[derive(Debug, Clone)]
 pub struct VisualInfo<C: IColor, R: IRect, V: IVec2> {
     /// the visual components for the piece, in order from bottom to top
-    components: Vec<VisualComponent<C, R, V>>,
+    pub components: Vec<VisualComponent<C, R, V>>,
+}
+
+impl<C: IColor, R: IRect, V: IVec2> From<VisualComponent<C, R, V>> for VisualInfo<C, R, V> {
+    fn from(value: VisualComponent<C, R, V>) -> Self {
+        Self {
+            components: vec![value],
+        }
+    }
+}
+
+impl<C: IColor, R: IRect, V: IVec2> From<TextboxInfo<C, R>> for VisualInfo<C, R, V> {
+    fn from(value: TextboxInfo<C, R>) -> Self {
+        Self::from(VisualComponent::Textbox(Box::new(value)))
+    }
+}
+
+impl<C: IColor, R: IRect, V: IVec2> From<ImageInfo<C, V>> for VisualInfo<C, R, V> {
+    fn from(value: ImageInfo<C, V>) -> Self {
+        Self::from(VisualComponent::Image(Box::new(value)))
+    }
+}
+
+impl<C: IColor, R: IRect, V: IVec2> From<PatternInfo<C, R, V>> for VisualInfo<C, R, V> {
+    fn from(value: PatternInfo<C, R, V>) -> Self {
+        Self::from(VisualComponent::Pattern(Box::new(value)))
+    }
 }
 
 impl<C: IColor, R: IRect, V: IVec2> Default for VisualInfo<C, R, V> {
@@ -702,6 +731,18 @@ pub enum EntityIdentifier<E: EntityTrait> {
     Name(String),
 }
 
+impl<E: EntityTrait> From<E> for EntityIdentifier<E> {
+    fn from(value: E) -> Self {
+        Self::Entity(value)
+    }
+}
+
+impl<E: EntityTrait> From<String> for EntityIdentifier<E> {
+    fn from(value: String) -> Self {
+        Self::Name(value)
+    }
+}
+
 impl<E: EntityTrait> FromLuaValue for EntityIdentifier<E> {
     fn try_from_lua_value(value: &mlua::Value) -> Result<Self, String> {
         if let mlua::Value::String(s) = value {
@@ -714,12 +755,27 @@ impl<E: EntityTrait> FromLuaValue for EntityIdentifier<E> {
 
 /// collision shape data intermediary between lua tables and actual collision shape
 #[derive(Debug, Clone)]
-pub enum CollisionShapeIR<S: IConvexShape + FromLuaTable> {
+pub enum CollisionShapeIR<S: IConvexShape + FromLuaTable + Debug> {
     Identifier(EntityIdentifier<CollisionShapeEntity>),
     Instance(CollisionShape<S>),
 }
 
-impl<S: IConvexShape + FromLuaTable> FromLuaValue for CollisionShapeIR<S> {
+impl<S: IConvexShape + FromLuaTable + Debug, I: Into<EntityIdentifier<CollisionShapeEntity>>>
+    From<I> for CollisionShapeIR<S>
+{
+    fn from(value: I) -> Self {
+        let ident: EntityIdentifier<CollisionShapeEntity> = value.into();
+        Self::Identifier(ident)
+    }
+}
+
+impl<S: IConvexShape + FromLuaTable + Debug> From<CollisionShape<S>> for CollisionShapeIR<S> {
+    fn from(value: CollisionShape<S>) -> Self {
+        Self::Instance(value)
+    }
+}
+
+impl<S: IConvexShape + FromLuaTable + Debug> FromLuaValue for CollisionShapeIR<S> {
     fn try_from_lua_value(value: &mlua::Value) -> Result<Self, String> {
         if let mlua::Value::Table(table) = value {
             Ok(Self::Instance(CollisionShape::try_from_lua_table(table)?))
@@ -865,7 +921,7 @@ impl<V: IVec2> FromLuaTable for PileIR<V> {
 
 /// collider data that serves as an intermediary between lua tables and a pieces collider
 #[derive(Debug, Clone)]
-pub struct PieceColliderIR<S: IConvexShape + FromLuaTable> {
+pub struct PieceColliderIR<S: IConvexShape + FromLuaTable + Debug> {
     /// the collision shape entity
     pub shape: CollisionShapeIR<S>,
 
@@ -873,7 +929,7 @@ pub struct PieceColliderIR<S: IConvexShape + FromLuaTable> {
     pub layer: String,
 }
 
-impl<S: IConvexShape + FromLuaTable> FromLuaValue for PieceColliderIR<S> {
+impl<S: IConvexShape + FromLuaTable + Debug> FromLuaValue for PieceColliderIR<S> {
     fn try_from_lua_value(value: &mlua::prelude::LuaValue) -> Result<Self, String> {
         match value {
             Value::Table(table) => Self::try_from_lua_table(&table),
@@ -882,7 +938,7 @@ impl<S: IConvexShape + FromLuaTable> FromLuaValue for PieceColliderIR<S> {
     }
 }
 
-impl<S: IConvexShape + FromLuaTable> FromLuaTable for PieceColliderIR<S> {
+impl<S: IConvexShape + FromLuaTable + Debug> FromLuaTable for PieceColliderIR<S> {
     fn try_from_lua_table(table: &mlua::prelude::LuaTable) -> Result<Self, String> {
         let shape = if let Ok(shape_table) = table.raw_get::<Value>("shape") {
             match CollisionShapeIR::try_from_lua_value(&shape_table) {
@@ -911,7 +967,7 @@ impl<S: IConvexShape + FromLuaTable> FromLuaTable for PieceColliderIR<S> {
 }
 
 /// piece data that serves as an intermediary between lua tables an a piece on the board
-pub struct PieceIR<S: IConvexShape + FromLuaTable, V: IVec2> {
+pub struct PieceIR<S: IConvexShape + FromLuaTable + Debug, V: IVec2> {
     /// optional name
     pub name: Option<String>,
 
@@ -931,7 +987,7 @@ pub struct PieceIR<S: IConvexShape + FromLuaTable, V: IVec2> {
     pub tags: Vec<String>,
 }
 
-impl<S: IConvexShape + FromLuaTable, V: IVec2> FromLuaValue for PieceIR<S, V> {
+impl<S: IConvexShape + FromLuaTable + Debug, V: IVec2> FromLuaValue for PieceIR<S, V> {
     fn try_from_lua_value(value: &mlua::prelude::LuaValue) -> Result<Self, String> {
         match value {
             Value::Table(table) => Self::try_from_lua_table(&table),
@@ -940,7 +996,7 @@ impl<S: IConvexShape + FromLuaTable, V: IVec2> FromLuaValue for PieceIR<S, V> {
     }
 }
 
-impl<S: IConvexShape + FromLuaTable, V: IVec2> FromLuaTable for PieceIR<S, V> {
+impl<S: IConvexShape + FromLuaTable + Debug, V: IVec2> FromLuaTable for PieceIR<S, V> {
     fn try_from_lua_table(table: &Table) -> Result<Self, String> {
         let name = if let Ok(val) = table.raw_get::<Value>("name") {
             if let Value::Nil = val {

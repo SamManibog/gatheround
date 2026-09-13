@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, fmt::Debug};
 
 use mlua::{Lua, Table, Value};
 
@@ -20,7 +20,7 @@ macro_rules! impl_as_f32 {
         )*
     };
 }
-impl_as_f32!(i8, u8, i16, u16, i32, u32, i64, u64, isize, usize, f64);
+impl_as_f32!(i8, u8, i16, u16, i32, u32, i64, u64, isize, usize, f32, f64);
 
 /// totally orded subset of floating-point numbers
 /// only supporting comparison operations
@@ -132,6 +132,16 @@ pub trait IVec2: std::fmt::Debug + Sized + Clone + Copy + PartialEq + IConvexSha
     /// create an isntance from this one, modifying y value by the given delta
     fn change_y(self, delta: f32) -> Self {
         Self::from_xy(self.x(), self.y() + delta)
+    }
+
+    /// create an isntance from this one, scaling x value by the given delta
+    fn scale_x(self, factor: f32) -> Self {
+        Self::from_xy(self.x() * factor, self.y())
+    }
+
+    /// create an isntance from this one, scalling y value by the given delta
+    fn scale_y(self, factor: f32) -> Self {
+        Self::from_xy(self.x(), self.y() * factor)
     }
 
     /// get the x position of the transform
@@ -274,7 +284,7 @@ pub fn valid_finite_rect_from_lua_table<R: IRect>(table: &Table) -> Result<R, St
     ))
 }
 
-pub trait IRect: Sized + Clone + Copy + IConvexShape {
+pub trait IRect: Sized + Clone + Copy + IConvexShape + Debug {
     /// creates an instance from the top left corner and dimensions
     /// should panic if dimensions are negative
     fn from_position_dimension<V1: IVec2, V2: IVec2>(position: V1, dimensions: V2) -> Self;
@@ -301,6 +311,11 @@ pub trait IRect: Sized + Clone + Copy + IConvexShape {
     /// creates an instance from the center and dimensions
     fn from_center_dimension<V1: IVec2, V2: IVec2>(center: V1, dimensions: V2) -> Self {
         Self::from_position_dimension(center.sub(dimensions.scaled(0.5)), dimensions)
+    }
+
+    /// creates an instance with a different position
+    fn with_position<V: IVec2>(&self, position: V) -> Self {
+        Self::from_position_dimension(position, self.dimensions::<V>())
     }
 
     /// fits the given rectangle into this one by translating it minimally
@@ -769,6 +784,15 @@ impl<V: IVec2> Default for RigidTransform<V> {
     }
 }
 
+impl<V: IVec2> From<V> for RigidTransform<V> {
+    fn from(value: V) -> Self {
+        Self {
+            position: value,
+            angle: 0.0,
+        }
+    }
+}
+
 impl<V: IVec2> RigidTransform<V> {
     /// gets the identity transform (same as defalt())
     pub fn identity() -> Self {
@@ -897,9 +921,9 @@ impl<V: IVec2, S: IConvexShape> IConvexShape for TransformedConvexShapeRef<'_, S
 
 /// a shape that can collide with others or points
 #[derive(Debug, Clone)]
-pub struct CollisionShape<S: IConvexShape>(pub Vec<S>);
+pub struct CollisionShape<S: Debug + IConvexShape>(pub Vec<S>);
 
-impl<S: IConvexShape + FromLuaTable> FromLuaTable for CollisionShape<S> {
+impl<S: IConvexShape + Debug + FromLuaTable> FromLuaTable for CollisionShape<S> {
     fn try_from_lua_table(table: &Table) -> Result<Self, String> {
         let mut convex_shapes = Vec::new();
 
@@ -935,7 +959,13 @@ impl<S: IConvexShape + FromLuaTable> FromLuaTable for CollisionShape<S> {
     }
 }
 
-impl<S: IConvexShape + FromLuaTable> FromLuaValue for CollisionShape<S> {
+impl<S: IConvexShape + FromLuaTable + Debug> From<S> for CollisionShape<S> {
+    fn from(value: S) -> Self {
+        Self(vec![value])
+    }
+}
+
+impl<S: IConvexShape + FromLuaTable + Debug> FromLuaValue for CollisionShape<S> {
     fn try_from_lua_value(value: &mlua::prelude::LuaValue) -> Result<Self, String> {
         match value {
             Value::Table(table) => Self::try_from_lua_table(&table),
@@ -944,13 +974,13 @@ impl<S: IConvexShape + FromLuaTable> FromLuaValue for CollisionShape<S> {
     }
 }
 
-impl<S: IConvexShape> Default for CollisionShape<S> {
+impl<S: IConvexShape + Debug> Default for CollisionShape<S> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<S: IConvexShape> CollisionShape<S> {
+impl<S: IConvexShape + Debug> CollisionShape<S> {
     /// creates an empty collision shape
     pub fn new() -> Self {
         Self(Vec::new())
@@ -1055,7 +1085,7 @@ impl<S: IConvexShape> CollisionShape<S> {
 
 /// creates an aabb from a list of convex shapes
 /// returns None of there are no shapes in the iterator
-pub fn compute_advanced_aabb<'a, R: IRect + 'a, V: IVec2, S: IConvexShape + 'a>(
+pub fn compute_advanced_aabb<'a, R: IRect + 'a, V: IVec2, S: IConvexShape + Debug + 'a>(
     transform: &RigidTransform<V>,
     mut shapes: impl Iterator<Item = &'a CollisionShape<S>>,
 ) -> Option<R> {
@@ -1163,6 +1193,17 @@ impl<I: Iterator<Item = V> + Clone, V: IVec2> IConvexShape for PointCloud<I, V> 
 
 #[derive(Debug, Clone)]
 pub struct ConvexHull<V: IVec2>(Vec<V>);
+
+impl<V: IVec2, R: IRect> From<R> for ConvexHull<V> {
+    fn from(value: R) -> Self {
+        Self(vec![
+            value.top_right(),
+            value.top_left(),
+            value.bottom_left(),
+            value.bottom_right(),
+        ])
+    }
+}
 
 impl<V: IVec2> FromLuaTable for ConvexHull<V> {
     fn try_from_lua_table(table: &Table) -> Result<Self, String> {

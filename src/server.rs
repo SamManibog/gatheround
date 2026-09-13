@@ -60,6 +60,7 @@ impl SessionToken {
     }
 }
 
+#[derive(Debug)]
 enum InvalidSessionError {
     DoesNotExist,
 }
@@ -73,6 +74,7 @@ impl Display for InvalidSessionError {
     }
 }
 
+#[derive(Debug)]
 enum NewSessionError {
     GameFull,
     NewJoinsBlocked,
@@ -184,19 +186,21 @@ struct DeserializablePlayerJoinRequest {
     pub color: String,
 }
 
+#[derive(Debug)]
 pub struct GameServer {
     input_receiver: Receiver<PlayerInputEvent>,
     new_player_receiver: Receiver<PlayerColor>,
     kick_player_sender: Sender<PlayerColor>,
     service_thread: JoinHandle<Result<(), tokio::io::Error>>,
     allow_joins: Arc<AtomicBool>,
+    host_addr: String,
 }
 
 impl GameServer {
     //pub const HOST_ADDR: &str = "192.168.137.1:443";
     pub const HOST_ADDR: &str = "127.0.0.1:8080";
 
-    pub const GATHEROUND_PATH: &str = "/gatheround";
+    pub const MAIN_PATH: &str = "/gatheround";
     pub const INPUT_API_PATH: &str = "/gatheround/input";
     pub const PLAYER_ASSIGNMENT_API_PATH: &str = "/gatheround/get-session";
     pub const HAS_SESSION_API_PATH: &str = "/gatheround/has-session";
@@ -298,7 +302,7 @@ impl GameServer {
 
         let mut session_cookie = Cookie::new(Self::SESSION_COOKIE_NAME, token.to_url_string());
         session_cookie.set_same_site(SameSite::Strict);
-        session_cookie.set_path(Self::GATHEROUND_PATH);
+        session_cookie.set_path(Self::MAIN_PATH);
         session_cookie.set_http_only(true);
         session_cookie.set_secure(true);
         session_cookie.set_max_age(Self::COOKIE_LIFETIME);
@@ -312,8 +316,8 @@ impl GameServer {
     }
 
     /// creates and runs a new input server
-    pub async fn run_new() -> Self {
-        let host_addr = Self::HOST_ADDR;
+    pub async fn run_new(address: String) -> Self {
+        let host_addr: String = address;
 
         let (input_sender, input_receiver) = mpsc::channel();
         let (new_player_sender, new_player_receiver) = mpsc::channel();
@@ -331,7 +335,7 @@ impl GameServer {
 
         let app = Router::new()
             .nest_service(
-                Self::GATHEROUND_PATH,
+                Self::MAIN_PATH,
                 ServeDir::new(Self::STATIC_FILES_PATH),
             )
             .route(Self::INPUT_API_PATH, post(Self::input_handler))
@@ -342,19 +346,25 @@ impl GameServer {
             )
             .with_state(state.into());
 
-        let listener = tokio::net::TcpListener::bind(host_addr)
+        let listener = tokio::net::TcpListener::bind(&host_addr)
             .await
             .expect(&format!("Failed to bind to port: {host_addr}."));
         let service_thread = tokio::spawn(async move { axum::serve(listener, app).await });
         println!("Server started at {host_addr}.");
 
         Self {
+            host_addr,
             allow_joins,
             input_receiver,
             new_player_receiver,
             kick_player_sender,
             service_thread,
         }
+    }
+
+    /// gets the address of the server
+    pub fn address(&self) -> &str {
+        &self.host_addr
     }
 
     /// blocks new players from joining

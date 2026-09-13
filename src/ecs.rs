@@ -483,7 +483,7 @@ impl<E: EntityTrait, T> DenseComponentManager<E, T> {
 
     /// clears he component manager of all entities and components
     pub fn clear(&mut self) {
-        self.sparse = vec![usize::MAX, INITIAL_ENTITY_CAPACITY];
+        self.sparse = vec![usize::MAX; INITIAL_ENTITY_CAPACITY];
         self.entities.clear();
         self.data.clear();
     }

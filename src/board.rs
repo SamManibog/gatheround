@@ -1,4 +1,8 @@
-use std::{collections::VecDeque, path::Path};
+use std::{
+    collections::VecDeque,
+    fmt::Debug,
+    path::{Path, PathBuf},
+};
 
 use mlua::Lua;
 
@@ -9,11 +13,13 @@ use crate::{
         SparseSet,
     },
     geometry::{self, CollisionShape, IConvexShape, IRect, IVec2, NumericF32, RigidTransform},
+    input::{InputEvent, PlayerInputEvent},
     intermediate_representations::{
-        CollisionShapeIR, EntityIdentifier, PieceColliderIR, PieceIR, PileIR, VisualInfo,
+        CollisionShapeIR, EntityIdentifier, PatternInfo, PieceColliderIR, PieceIR, PileIR,
+        TextboxInfo, VisualInfo,
     },
     lua::FromLuaTable,
-    renderer::{GlobalAssets, ITextureCompiler},
+    platform::{GlobalAssets, ITextureCompiler},
     resources::{
         CollisionLayerEntity, CollisionLayerManager, CollisionShapeEntity, DrawLayerManager,
         PieceCollider, PieceEntity, PileManager, PlayerColor, PlayerManager, QuadTreeManager,
@@ -26,7 +32,15 @@ use crate::{
 ///  - piles
 ///  - unpiled
 ///  - piled
-pub struct BoardManager<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> {
+#[derive(Debug)]
+pub struct BoardManager<
+    C: IColor + 'static,
+    R: IRect + 'static,
+    V: IVec2 + 'static,
+    S: IConvexShape + FromLuaTable + Debug + From<R> + 'static,
+    T: 'static,
+    F: 'static,
+> {
     /// textures resources that can be used
     /// unnamed textures must be uniquely owned
     texture_manager: TextureManager<T, F>,
@@ -116,11 +130,14 @@ pub struct BoardManager<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLua
     pub color: C,
 }
 
-impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F>
+impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + From<R>, T, F>
     BoardManager<C, R, V, S, T, F>
 {
     /// the dimensions of quadtrees relative to actual dimensions
     const QUADTREE_SIZE_RATIO: f32 = 2.0;
+
+    /// the max dimensions of magnified textures as a ratio of board size
+    const MAGNIFICATION_RATIO: f32 = 0.8;
 
     pub fn new(dimensions: V) -> Self {
         let visible_rect = R::from_position_dimension((0.0, 0.0), dimensions);
@@ -685,6 +702,19 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F>
         Ok(())
     }
 
+    /// creates a new collision shape, returning its entity
+    pub fn create_collision_shape(
+        &mut self,
+        name: String,
+        shape: CollisionShape<S>,
+    ) -> Result<CollisionShapeEntity, String> {
+        if self.collision_shape_manager.contains_name(&name) {
+            return Err(format!("CollisionShape with name '{name}' already exists."));
+        }
+
+        Ok(self.collision_shape_manager.add_named(name, shape).unwrap())
+    }
+
     /// gets the collision shape referenced by the CollisionShapeEntity
     pub fn get_collision_shape(&self, shape: CollisionShapeEntity) -> Option<&CollisionShape<S>> {
         self.collision_shape_manager.get(shape)
@@ -1087,22 +1117,24 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F>
 
     /// returns an iterator over players, their positions, and their held pieces
     /// players should be drawn on top of every piece
-    pub fn player_draw_iter<'a, 'b>(
+    pub fn player_draw_iter<'a, 'b, F2>(
         &'b self,
-        global_assets: &'a GlobalAssets<T>,
+        global_assets: &'a GlobalAssets<T, F2>,
     ) -> impl Iterator<Item = (&'a T, V, C)> {
-        self.player_manager.position_iter().filter_map(|(color, pos)| {
-            if !self.player_manager.is_visible(color) {
-                return None;
-            }
+        self.player_manager
+            .position_iter()
+            .filter_map(|(color, pos)| {
+                if !self.player_manager.is_visible(color) {
+                    return None;
+                }
 
-            let texture = if self.player_manager.is_holding(color) {
-                &global_assets.closed_hand_texture
-            } else {
-                &global_assets.open_hand_texture
-            };
-            Some((texture, pos, color.into_color()))
-        })
+                let texture = if self.player_manager.is_holding(color) {
+                    &global_assets.closed_hand_texture
+                } else {
+                    &global_assets.open_hand_texture
+                };
+                Some((texture, pos, color.into_color()))
+            })
     }
 
     /// gets the dimensions of the board
@@ -1117,13 +1149,13 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F>
         project_path: &Path,
         name: String,
         visual: &VisualInfo<C, R, V>,
-        magnification_dimensions: V,
         renderer: &mut IR,
     ) -> Result<(), String>
     where
         C: IColor,
         IR: ITextureCompiler<Font = F, Texture = T, Color = C, Rectangle = R, Vector2 = V>,
     {
+        let magnification_dimensions = self.dimensions().scaled(Self::MAGNIFICATION_RATIO);
         self.texture_manager.load_texture(
             project_path,
             Some(name.clone()),
@@ -1133,6 +1165,10 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F>
         )?;
 
         Ok(())
+    }
+
+    pub fn is_playing(&self, color: PlayerColor) -> bool {
+        self.player_manager.is_playing(color)
     }
 
     pub fn add_player(&mut self, color: PlayerColor) -> Result<(), String> {
@@ -1948,7 +1984,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F>
         self.validate_player(player)?;
         Ok(self.player_manager.is_visible(player))
     }
-    
+
     /// makes a player visible
     pub fn show_player(&mut self, player: PlayerColor) -> Result<(), String> {
         self.validate_player(player)?;
@@ -2002,22 +2038,267 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F>
         self.no_collision_entities.remove(entity);
         Ok(())
     }
-}
 
-pub struct LobbyBoard<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> {
-    board: Box<BoardManager<C, R, V, S, T, F>>,
-}
+    // --------------------------------------------------------------------------------------------------
+    // lobby board functionality ------------------------------------------------------------------------
+    // --------------------------------------------------------------------------------------------------
 
-impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable, T, F> LobbyBoard<C, R, V, S, T, F> {
-    pub fn new(mut board: Box<BoardManager<C, R, V, S, T, F>>) -> Self {
-        board.reset();
-        Self {
-            board
+    /// text for the title
+    pub const LOBBY_TITLE_TEXT: &str = "Waiting\nfor\nplayers\nto\njoin";
+
+    /// title width as a proportion of board width
+    pub const LOBBY_TITLE_WIDTH_FACTOR: f32 = 0.4;
+
+    /// padding for content as a proportion of the minimum board dimension (width or height)
+    pub const LOBBY_PADDING: f32 = 0.1;
+
+    /// the max side length dimension of swatches
+    pub const LOBBY_MAX_SWATCH_LENGTH: f32 = 150.0;
+
+    /// the gap between swatches as a proportion of swatch length
+    pub const LOBBY_SWATCH_GAP_FACTOR: f32 = 0.1;
+
+    pub fn lobby_mode<IR>(&mut self, renderer: &mut IR, url: &str)
+    where
+        IR: ITextureCompiler<Font = F, Texture = T, Color = C, Rectangle = R, Vector2 = V>,
+    {
+        self.reset();
+
+        // generate assets based on board dimensions
+        let board_rect = R::from_position_dimension(V::origin(), self.dimensions());
+        let padding =
+            (self.dimensions().x().min(self.dimensions().y()) * Self::LOBBY_PADDING).round();
+        let [title_rect, swatches_rect] = board_rect.divide_proportions_horizontal(
+            &[
+                Self::LOBBY_TITLE_WIDTH_FACTOR,
+                1.0_f32 - Self::LOBBY_TITLE_WIDTH_FACTOR,
+            ],
+            padding,
+        );
+        let title_rect = title_rect.expand_left(-padding).expand_vertical(-padding);
+        let swatches_rect = swatches_rect
+            .expand_right(-padding)
+            .expand_vertical(-padding);
+
+        // make title
+        let title_ir: VisualInfo<C, R, V> = VisualInfo::from(TextboxInfo {
+            rect: title_rect.with_position(V::origin()),
+            text: format!("{}\n{url}", Self::LOBBY_TITLE_TEXT),
+            align: crate::intermediate_representations::TextAlign::CenterLeft,
+            spacing: None,
+            size: None,
+            font: String::from("ptsans-bold.ttf"),
+            color: C::try_from_hex_str("000000").unwrap(),
+        });
+        if let Err(msg) =
+            self.create_texture(&PathBuf::new(), String::from("title"), &title_ir, renderer)
+        {
+            panic!("Could not load lobby title texture: {msg}");
+        }
+        if let Err(msg) = self.create_piece(PieceIR {
+            name: None,
+            texture: String::from("title"),
+            transform: title_rect.position::<V>().into(),
+            colliders: Vec::new(),
+            draw_layer: -2,
+            tags: Vec::new(),
+        }) {
+            panic!("Could not load lobby title piece: {msg}");
+        }
+
+        // make swatches
+        let major_axis_length = swatches_rect.width().max(swatches_rect.height());
+        let minor_axis_length = swatches_rect.width().min(swatches_rect.height());
+        let swatch_side_length = f32::round(
+            (major_axis_length / (4.0 + Self::LOBBY_SWATCH_GAP_FACTOR * 3.0))
+                .min(minor_axis_length / (3.0 + Self::LOBBY_SWATCH_GAP_FACTOR * 2.0))
+                .min(Self::LOBBY_MAX_SWATCH_LENGTH)
+                / 2.0,
+        ) * 2.0;
+        let swatch_gap = f32::floor(swatch_side_length * Self::LOBBY_SWATCH_GAP_FACTOR);
+        let swatch_dimensions = V::from_xy(swatch_side_length, swatch_side_length);
+        self.create_collision_shape(
+            String::from("swatch-collider"),
+            CollisionShape::from(S::from(R::from_center_dimension(
+                V::origin(),
+                swatch_dimensions,
+            ))),
+        )
+        .expect("Unable to create swatch collision shape.");
+
+        let swatch_position_iter = {
+            let (start, rows, cols) = if major_axis_length == swatches_rect.width() {
+                (
+                    R::from_center_dimension(
+                        swatches_rect.center::<V>(),
+                        V::from_xy(
+                            swatch_side_length * 4.0 + swatch_gap * 3.0,
+                            swatch_side_length * 3.0 + swatch_gap * 2.0,
+                        ),
+                    ),
+                    3,
+                    4,
+                )
+            } else {
+                (
+                    R::from_center_dimension(
+                        swatches_rect.center::<V>(),
+                        V::from_xy(
+                            swatch_side_length * 3.0 + swatch_gap * 2.0,
+                            swatch_side_length * 4.0 + swatch_gap * 3.0,
+                        ),
+                    ),
+                    4,
+                    3,
+                )
+            };
+
+            let cell_count = rows * cols;
+
+            let mut index = 0;
+            let x = start.x();
+            let y = start.y();
+
+            std::iter::from_fn(move || {
+                if index >= cell_count {
+                    return None;
+                }
+
+                let row = index / cols;
+                let col = index % rows;
+                index += 1;
+
+                Some(
+                    V::from_xy(
+                        x + col as f32 * (swatch_side_length + swatch_gap),
+                        y + row as f32 * (swatch_side_length + swatch_gap),
+                    )
+                    .add(swatch_dimensions.scaled(0.5)),
+                )
+            })
+        };
+        let color_iter = PlayerColor::LIST.iter().cloned();
+
+        for (color, position) in color_iter.zip(swatch_position_iter) {
+            self.lobby_create_swatch_texture(color, swatch_dimensions, renderer);
+            self.lobby_create_swatch_piece(color, position);
         }
     }
 
-    pub fn unwrap(self) -> Box<BoardManager<C, R, V, S, T, F>> {
-        self.board
+    fn lobby_create_swatch_texture< IR>(
+        &mut self,
+        color: PlayerColor,
+        dimensions: V,
+        renderer: &mut IR,
+    ) where
+        IR: ITextureCompiler<Font = F, Texture = T, Color = C, Rectangle = R, Vector2 = V>,
+    {
+        let swatch_ir: VisualInfo<C, R, V> = VisualInfo::from(PatternInfo {
+            rect: R::from_center_dimension(V::origin(), dimensions),
+            pattern: crate::intermediate_representations::PatternType::Solid,
+            weight: 1.0,
+            spacing: 0.0,
+            angle: 0.0,
+            offset: V::origin(),
+            pattern_color: color.into_color(),
+            background_color: color.into_color(),
+        });
+        if let Err(msg) = self.create_texture(
+            &PathBuf::new(),
+            format!("swatch-{}", color.name()),
+            &swatch_ir,
+            renderer,
+        ) {
+            panic!("Could not load swatch texture: {msg}");
+        }
+    }
+
+    fn lobby_create_swatch_piece(&mut self, color: PlayerColor, position: V) {
+        if let Err(msg) = self.create_piece(PieceIR {
+            name: Some(format!("swatch-{}", color.name())),
+            texture: format!("swatch-{}", color.name()),
+            transform: position.into(),
+            colliders: vec![PieceColliderIR {
+                shape: String::from("swatch-collider").into(),
+                layer: String::from("default"),
+            }],
+            draw_layer: 0,
+            tags: Vec::new(),
+        }) {
+            panic!("Could not load swatch piece: {msg}");
+        }
+    }
+
+    /// adds a player, does nothing if the player already exists
+    pub fn lobby_add_player(&mut self, color: PlayerColor) {
+        if self.is_playing(color) {
+            return;
+        }
+
+        let swatch_identifier = EntityIdentifier::Name(format!("swatch-{}", color.name()));
+
+        self.add_player(color)
+            .expect("Unable to add player: already exists.");
+        let position = self
+            .get_transform(swatch_identifier.clone())
+            .expect("Unable to add player: missing swatch.")
+            .position;
+        self.set_player_position(color, position).unwrap();
+        self.delete_item(swatch_identifier)
+            .expect("Unable to add player: failed to delete swatch.");
+    }
+
+    /// removes a player, does nothing if the player does not exist
+    pub fn lobby_remove_player(&mut self, color: PlayerColor) {
+        if !self.is_playing(color) {
+            return;
+        }
+
+        let position = self
+            .get_player_position(color)
+            .expect("Failed to remove player: couldn't get player position.");
+        self.lobby_create_swatch_piece(color, position);
+        self.remove_player(color);
+    }
+
+    /// handles a tap event for a player, does nothing if the player does not exist
+    fn lobby_handle_tap(&mut self, color: PlayerColor) {
+        if self.is_holding(color) {
+            self.set_held_item(color, None)
+                .expect("unable to drop item.");
+        } else {
+            let player_pos = self.get_player_position(color).unwrap();
+            if let Some(piece) = self.query_top_piece(player_pos) {
+                self.set_held_item(color, Some(EntityIdentifier::Entity(piece)))
+                    .expect("unable to pick up item");
+            }
+        }
+    }
+
+    /// handles a movement event for a player, does nothing if the player does not exist
+    fn lobby_handle_move(&mut self, color: PlayerColor, delta: V) {
+        let _ = self.move_player(color, delta);
+    }
+
+    /// handles a "raw" input event
+    /// ignores invalid input events
+    fn lobby_handle_input(&mut self, input: PlayerInputEvent) {
+        let player = input.player;
+        match input.event {
+            InputEvent::TrackpadDelta { delta_x, delta_y } => {
+                self.lobby_handle_move(player, V::from_xy(delta_x, delta_y))
+            }
+            InputEvent::TrackpadPress => self.lobby_handle_tap(player),
+
+            _ => (),
+        }
+    }
+
+    /// handles input events in an iterator
+    pub fn lobby_handle_inputs(&mut self, inputs: impl Iterator<Item = PlayerInputEvent>) {
+        for input in inputs {
+            self.lobby_handle_input(input);
+        }
     }
 }
 
@@ -2026,12 +2307,12 @@ struct BoardDrawIter<
     'a,
     I: Iterator<Item = PieceEntity>,
     FN: Fn(PieceEntity) -> Option<O>,
-    C: IColor,
-    R: IRect,
-    V: IVec2,
-    S: IConvexShape + FromLuaTable,
-    T,
-    F,
+    C: IColor + 'static,
+    R: IRect + 'static,
+    V: IVec2 + 'static,
+    S: IConvexShape + FromLuaTable + Debug + From<R> + 'static,
+    T: 'static,
+    F: 'static,
     O,
 > {
     board: &'a BoardManager<C, R, V, S, T, F>,
@@ -2047,7 +2328,7 @@ impl<
     C: IColor,
     R: IRect,
     V: IVec2,
-    S: IConvexShape + FromLuaTable,
+    S: IConvexShape + FromLuaTable + Debug + From<R>,
     T,
     F,
     O,

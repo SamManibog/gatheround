@@ -12,6 +12,7 @@ enum QuadTreeRegion {
 
 /// a loose quadtree for overlap detection
 /// subregions overlap slightly
+#[derive(Debug)]
 pub struct QuadTree<E: Clone + Eq, R: IRect> {
     /// the aabb that this quadtree occupies
     aabb: R,

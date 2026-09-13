@@ -12,11 +12,12 @@ use roaring::RoaringBitmap;
 use crate::{
     color::IColor,
     ecs::{DenseComponentManager, DenseSet, Entity, EntityTrait, ResourceManager},
+    fonts::{self, BuiltinFontData},
     geometry::{IRect, IVec2},
     intermediate_representations::VisualInfo,
     lua::FromLuaValue,
+    platform::ITextureCompiler,
     quadtree::QuadTree,
-    renderer::ITextureCompiler,
 };
 
 #[cfg(target_os = "windows")]
@@ -97,6 +98,7 @@ pub struct PileEntry<V: IVec2> {
 }
 
 /// manages piles and the pieces on them
+#[derive(Debug)]
 pub struct PileManager<V: IVec2> {
     piles: DenseComponentManager<PieceEntity, PileEntry<V>>,
     piece_pile_map: DenseComponentManager<PieceEntity, PieceEntity>,
@@ -298,6 +300,7 @@ impl<V: IVec2> PileManager<V> {
     }
 }
 
+#[derive(Debug)]
 pub struct TagManager {
     /// the tags of pieces that may exist
     /// maps tags to the list of pieces in that tag
@@ -449,6 +452,7 @@ impl TagManager {
     }
 }
 
+#[derive(Debug)]
 pub struct DrawLayerManager {
     /// ref counts for draw layers
     /// allows linear time construction of render layers during render operations
@@ -527,6 +531,7 @@ impl DrawLayerManager {
     }
 }
 
+#[derive(Debug)]
 pub struct CollisionLayerManager {
     layers: ResourceManager<CollisionLayerEntity, usize>,
 }
@@ -588,6 +593,7 @@ impl CollisionLayerManager {
     }
 }
 
+#[derive(Debug)]
 pub struct QuadTreeManager<R: IRect> {
     /// aabbs for each piece
     aabbs: DenseComponentManager<PieceEntity, R>,
@@ -674,7 +680,24 @@ pub enum PlayerColor {
 }
 
 impl PlayerColor {
+    /// the number of colors
     pub const COLOR_COUNT: usize = 12;
+
+    /// the list of colors
+    pub const LIST: [Self; Self::COLOR_COUNT] = [
+        Self::Red,
+        Self::Orange,
+        Self::Yellow,
+        Self::Lime,
+        Self::Green,
+        Self::Cyan,
+        Self::Blue,
+        Self::Purple,
+        Self::Pink,
+        Self::Black,
+        Self::White,
+        Self::Brown,
+    ];
 
     pub fn into_color<C: IColor>(&self) -> C {
         let hex = match self {
@@ -1103,6 +1126,7 @@ impl<'a, F, I> VisualComponentProvider<'a, F, I> {
 }
 
 /// an entry in a font manager for fonts saved to memory
+#[derive(Debug)]
 pub struct FontEntry<F> {
     /// the set of characters loaded for this font
     pub charset: RoaringBitmap,
@@ -1111,6 +1135,7 @@ pub struct FontEntry<F> {
     pub sizes: BTreeMap<u32, F>,
 }
 
+#[derive(Debug)]
 pub struct FontManager<F> {
     fonts: HashMap<String, FontEntry<F>>,
 }
@@ -1123,20 +1148,12 @@ impl<F> Default for FontManager<F> {
     }
 }
 
-struct BuiltinFontData {
-    filetype: &'static str,
-    data: &'static [u8],
-}
-
 enum FontLoadIdentifier<'a> {
     Path(&'a Path),
     Builtin(&'static BuiltinFontData),
 }
 
 impl<F> FontManager<F> {
-    /// the minimum set of characters that every font will try to load
-    pub const BASE_CHARSET: &str = "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
-
     pub fn new() -> Self {
         Self::default()
     }
@@ -1144,28 +1161,6 @@ impl<F> FontManager<F> {
     // remvoes all fonts
     pub fn clear(&mut self) {
         self.fonts.clear();
-    }
-
-    /// gets builtin font data
-    fn get_builtin_data(font_name: &str) -> Option<&'static BuiltinFontData> {
-        match font_name {
-            "lucida-console.ttf" => Some(&BuiltinFontData {
-                filetype: ".ttf",
-                data: include_bytes!("lucida-console.ttf"),
-            }),
-
-            "ptserif.ttf" => Some(&BuiltinFontData {
-                filetype: ".ttf",
-                data: include_bytes!("ptserif.ttf"),
-            }),
-
-            "ptserif-bold.ttf" => Some(&BuiltinFontData {
-                filetype: ".ttf",
-                data: include_bytes!("ptserif-bold.ttf"),
-            }),
-
-            _ => None,
-        }
     }
 
     /// batch loads multiple font sizes at once
@@ -1191,7 +1186,7 @@ impl<F> FontManager<F> {
             }
         }
 
-        if let Some(builtin) = Self::get_builtin_data(&font_name) {
+        if let Some(builtin) = BuiltinFontData::get_by_name(&font_name) {
             if self.batch_load_font_helper(
                 renderer,
                 FontLoadIdentifier::Builtin(&builtin),
@@ -1208,7 +1203,7 @@ impl<F> FontManager<F> {
 
     /// batch loads multiple font sizes at once
     /// returns true if all sizes could be loaded
-    pub fn batch_load_font_helper<R: ITextureCompiler<Font = F>>(
+    fn batch_load_font_helper<R: ITextureCompiler<Font = F>>(
         &mut self,
         renderer: &mut R,
         font_identifier: FontLoadIdentifier,
@@ -1294,7 +1289,7 @@ impl<F> FontManager<F> {
                         charset: RoaringBitmap::from_iter(
                             characters
                                 .chars()
-                                .chain(Self::BASE_CHARSET.chars())
+                                .chain(fonts::BASE_CHARSET.chars())
                                 .map(|c| c as u32),
                         ),
                         sizes: temp_map,
@@ -1348,6 +1343,7 @@ pub struct TextureEntityMarker;
 pub type TextureEntity = Entity<TextureEntityMarker>;
 
 /// texture resources
+#[derive(Debug)]
 pub struct TextureManager<T, F> {
     /// loaded fonts to speed up font rendering capabilities
     fonts: FontManager<F>,

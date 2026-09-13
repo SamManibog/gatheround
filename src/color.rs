@@ -1,6 +1,8 @@
+use std::fmt::Debug;
+
 use mlua::{Table, Value};
 
-pub trait IColor: Clone {
+pub trait IColor: Clone + Copy + Debug + Sized {
     fn r(&self) -> u8;
     fn g(&self) -> u8;
     fn b(&self) -> u8;
@@ -65,7 +67,7 @@ pub fn color_from_lua_value<C: IColor>(value: &Value) -> Result<C, String> {
             } else {
                 Err(format!("Invalid color hex values: {rust_str}"))
             }
-        },
+        }
         Value::Table(t) => color_from_lua_table(&t),
         _ => Err(format!("Invalid color: expected table or string value.")),
     }
