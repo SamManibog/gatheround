@@ -34,12 +34,12 @@ use crate::{
 ///  - piled
 #[derive(Debug)]
 pub struct BoardManager<
-    C: IColor + 'static,
-    R: IRect + 'static,
-    V: IVec2 + 'static,
-    S: IConvexShape + FromLuaTable + Debug + From<R> + 'static,
-    T: 'static,
-    F: 'static,
+    C: IColor,
+    R: IRect,
+    V: IVec2,
+    S: IConvexShape + FromLuaTable + Debug + From<R>,
+    T,
+    F,
 > {
     /// textures resources that can be used
     /// unnamed textures must be uniquely owned
@@ -2165,7 +2165,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
                 }
 
                 let row = index / cols;
-                let col = index % rows;
+                let col = index % cols;
                 index += 1;
 
                 Some(
@@ -2185,7 +2185,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
         }
     }
 
-    fn lobby_create_swatch_texture< IR>(
+    fn lobby_create_swatch_texture<IR>(
         &mut self,
         color: PlayerColor,
         dimensions: V,
@@ -2307,12 +2307,12 @@ struct BoardDrawIter<
     'a,
     I: Iterator<Item = PieceEntity>,
     FN: Fn(PieceEntity) -> Option<O>,
-    C: IColor + 'static,
-    R: IRect + 'static,
-    V: IVec2 + 'static,
-    S: IConvexShape + FromLuaTable + Debug + From<R> + 'static,
-    T: 'static,
-    F: 'static,
+    C: IColor,
+    R: IRect,
+    V: IVec2,
+    S: IConvexShape + FromLuaTable + Debug + From<R>,
+    T,
+    F,
     O,
 > {
     board: &'a BoardManager<C, R, V, S, T, F>,
