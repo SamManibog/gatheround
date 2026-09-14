@@ -16,7 +16,7 @@ use crate::{
     input::{InputEvent, PlayerInputEvent},
     intermediate_representations::{
         CollisionShapeIR, EntityIdentifier, PatternInfo, PieceColliderIR, PieceIR, PileIR,
-        TextboxInfo, VisualInfo,
+        TextboxInfo, VisualComponent, VisualInfo,
     },
     lua::FromLuaTable,
     platform::{GlobalAssets, ITextureCompiler},
@@ -2043,11 +2043,17 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
     // lobby board functionality ------------------------------------------------------------------------
     // --------------------------------------------------------------------------------------------------
 
-    /// text for the title
-    pub const LOBBY_TITLE_TEXT: &str = "Waiting\nfor\nplayers\nto\njoin";
+    /// title height as a proportion of board height
+    pub const LOBBY_TITLE_HEIGHT_FACTOR: f32 = 0.07;
 
-    /// title width as a proportion of board width
-    pub const LOBBY_TITLE_WIDTH_FACTOR: f32 = 0.4;
+    /// background weight as a proportion of board shortest board dimension,
+    pub const LOBBY_BACKGROUND_WEIGHT: f32 = 0.1;
+
+    /// instructions width as a proportion of board width
+    pub const LOBBY_INSTRUCTIONS_WIDTH_FACTOR: f32 = 0.35;
+
+    /// remaining colors text height as a proportion of board height
+    pub const LOBBY_REMAINING_COLORS_HEIGHT_FACTOR: f32 = 0.06;
 
     /// padding for content as a proportion of the minimum board dimension (width or height)
     pub const LOBBY_PADDING: f32 = 0.1;
@@ -2066,30 +2072,50 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
 
         // generate assets based on board dimensions
         let board_rect = R::from_position_dimension(V::origin(), self.dimensions());
-        let padding =
-            (self.dimensions().x().min(self.dimensions().y()) * Self::LOBBY_PADDING).round();
-        let [title_rect, swatches_rect] = board_rect.divide_proportions_horizontal(
+        let size_scalar = self.dimensions().x().min(self.dimensions().y());
+        let padding = (size_scalar * Self::LOBBY_PADDING).round();
+        let [_, title_rect, _, content_rect, _] = board_rect.divide_proportions_vertical(
             &[
-                Self::LOBBY_TITLE_WIDTH_FACTOR,
-                1.0_f32 - Self::LOBBY_TITLE_WIDTH_FACTOR,
+                Self::LOBBY_PADDING,
+                Self::LOBBY_TITLE_HEIGHT_FACTOR,
+                Self::LOBBY_PADDING,
+                1.0_f32 - Self::LOBBY_TITLE_HEIGHT_FACTOR - 3.0 * Self::LOBBY_PADDING,
+                Self::LOBBY_PADDING,
             ],
-            padding,
+            0.0,
         );
-        let title_rect = title_rect.expand_left(-padding).expand_vertical(-padding);
-        let swatches_rect = swatches_rect
-            .expand_right(-padding)
-            .expand_vertical(-padding);
+        let title_rect = title_rect.expand_horizontal(-padding);
+        let [_, instructions_rect, _, swatch_content_rect, _] = content_rect
+            .divide_proportions_horizontal(
+                &[
+                    Self::LOBBY_PADDING,
+                    Self::LOBBY_INSTRUCTIONS_WIDTH_FACTOR,
+                    Self::LOBBY_PADDING,
+                    1.0_f32 - Self::LOBBY_INSTRUCTIONS_WIDTH_FACTOR - 3.0 * Self::LOBBY_PADDING,
+                    Self::LOBBY_PADDING,
+                ],
+                0.0,
+            );
+        let [remaining_colors_rect, _, swatches_rect] = swatch_content_rect
+            .divide_proportions_vertical(
+                &[
+                    Self::LOBBY_REMAINING_COLORS_HEIGHT_FACTOR,
+                    Self::LOBBY_REMAINING_COLORS_HEIGHT_FACTOR,
+                    1.0 - Self::LOBBY_REMAINING_COLORS_HEIGHT_FACTOR * 4.0,
+                ],
+                0.0,
+            );
 
         // make title
-        let title_ir: VisualInfo<C, R, V> = VisualInfo::from(TextboxInfo {
+        let title_ir: VisualInfo<C, R, V> = VisualInfo::from(VisualComponent::from(TextboxInfo {
             rect: title_rect.with_position(V::origin()),
-            text: format!("{}\n{url}", Self::LOBBY_TITLE_TEXT),
-            align: crate::intermediate_representations::TextAlign::CenterLeft,
+            text: format!("Waiting for players to join..."),
+            align: crate::intermediate_representations::TextAlign::CenterCenter,
             spacing: None,
             size: None,
-            font: String::from("ptsans-bold.ttf"),
+            font: String::from("ptserif-bold.ttf"),
             color: C::try_from_hex_str("000000").unwrap(),
-        });
+        }));
         if let Err(msg) =
             self.create_texture(&PathBuf::new(), String::from("title"), &title_ir, renderer)
         {
@@ -2100,10 +2126,104 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
             texture: String::from("title"),
             transform: title_rect.position::<V>().into(),
             colliders: Vec::new(),
-            draw_layer: -2,
+            draw_layer: -1,
             tags: Vec::new(),
         }) {
             panic!("Could not load lobby title piece: {msg}");
+        }
+
+        // make instructions
+        let instructions_ir: VisualInfo<C, R, V> = VisualInfo::from(VisualComponent::from(
+            TextboxInfo {
+                rect: instructions_rect.with_position(V::origin()),
+                text: format!(
+                    "1) Open your web browser.\n\n2) In the address bar, enter\n     the following URL:\n     {url}\n\n3) Select a color to play as."
+                ),
+                align: crate::intermediate_representations::TextAlign::TopLeft,
+                spacing: None,
+                size: None,
+                font: String::from("ptserif-bold.ttf"),
+                color: C::try_from_hex_str("000000").unwrap(),
+            },
+        ));
+        if let Err(msg) = self.create_texture(
+            &PathBuf::new(),
+            String::from("instructions"),
+            &instructions_ir,
+            renderer,
+        ) {
+            panic!("Could not load lobby instructions texture: {msg}");
+        }
+        if let Err(msg) = self.create_piece(PieceIR {
+            name: None,
+            texture: String::from("instructions"),
+            transform: instructions_rect.position::<V>().into(),
+            colliders: Vec::new(),
+            draw_layer: -1,
+            tags: Vec::new(),
+        }) {
+            panic!("Could not load lobby instructions piece: {msg}");
+        }
+
+        // make remaining colors text
+        let remaining_ir: VisualInfo<C, R, V> =
+            VisualInfo::from(VisualComponent::from(TextboxInfo {
+                rect: remaining_colors_rect.with_position(V::origin()),
+                text: format!("Colors remaining:"),
+                align: crate::intermediate_representations::TextAlign::TopCenter,
+                spacing: None,
+                size: None,
+                font: String::from("ptserif-bold.ttf"),
+                color: C::try_from_hex_str("000000").unwrap(),
+            }));
+        if let Err(msg) = self.create_texture(
+            &PathBuf::new(),
+            String::from("remaining"),
+            &remaining_ir,
+            renderer,
+        ) {
+            panic!("Could not load lobby remaining colors texture: {msg}");
+        }
+        if let Err(msg) = self.create_piece(PieceIR {
+            name: None,
+            texture: String::from("remaining"),
+            transform: remaining_colors_rect.position::<V>().into(),
+            colliders: Vec::new(),
+            draw_layer: -1,
+            tags: Vec::new(),
+        }) {
+            panic!("Could not load lobby remaining colors piece: {msg}");
+        }
+
+        // make background
+        let background_ir: VisualInfo<C, R, V> =
+            VisualInfo::from(VisualComponent::from(PatternInfo {
+                rect: board_rect.with_center(V::origin()),
+                pattern: crate::intermediate_representations::PatternType::Checkers,
+                pattern_color: C::try_from_hex_str("E8E8E8").unwrap(),
+                background_color: C::try_from_hex_str("E0E0E0").unwrap(),
+                offset: V::origin(),
+                spacing: 0.0,
+                angle: 45.0,
+                weight: Self::LOBBY_BACKGROUND_WEIGHT * size_scalar,
+            }));
+        if let Err(msg) = self.create_texture(
+            &PathBuf::new(),
+            String::from("background"),
+            &background_ir,
+            renderer,
+        ) {
+            panic!("Could not load lobby background texture: {msg}");
+        }
+        if let Err(msg) = self.create_piece(PieceIR {
+            name: None,
+            texture: String::from("background"),
+            transform: board_rect.center::<V>().into(),
+            colliders: Vec::new(),
+            draw_layer: -10,
+            tags: Vec::new(),
+        }) {
+            panic!("Could not load lobby background piece: {msg}");
         }
 
         // make swatches
@@ -2135,7 +2255,8 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
                             swatch_side_length * 4.0 + swatch_gap * 3.0,
                             swatch_side_length * 3.0 + swatch_gap * 2.0,
                         ),
-                    ),
+                    )
+                    .with_y(swatches_rect.y()),
                     3,
                     4,
                 )
@@ -2147,7 +2268,8 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
                             swatch_side_length * 3.0 + swatch_gap * 2.0,
                             swatch_side_length * 4.0 + swatch_gap * 3.0,
                         ),
-                    ),
+                    )
+                    .with_y(swatches_rect.y()),
                     4,
                     3,
                 )
@@ -2181,7 +2303,11 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
 
         for (color, position) in color_iter.zip(swatch_position_iter) {
             self.lobby_create_swatch_texture(color, swatch_dimensions, renderer);
-            self.lobby_create_swatch_piece(color, position);
+            if self.is_playing(color) {
+                self.player_manager.set_position(color, position);
+            } else {
+                self.lobby_create_swatch_piece(color, position);
+            }
         }
     }
 
@@ -2193,16 +2319,32 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
     ) where
         IR: ITextureCompiler<Font = F, Texture = T, Color = C, Rectangle = R, Vector2 = V>,
     {
-        let swatch_ir: VisualInfo<C, R, V> = VisualInfo::from(PatternInfo {
-            rect: R::from_center_dimension(V::origin(), dimensions),
-            pattern: crate::intermediate_representations::PatternType::Solid,
-            weight: 1.0,
-            spacing: 0.0,
-            angle: 0.0,
-            offset: V::origin(),
-            pattern_color: color.into_color(),
-            background_color: color.into_color(),
-        });
+        let swatch_ir: VisualInfo<C, R, V> = VisualInfo {
+            components: vec![
+                PatternInfo {
+                    rect: R::from_center_dimension(V::origin(), dimensions),
+                    pattern: crate::intermediate_representations::PatternType::Solid,
+                    weight: 1.0,
+                    spacing: 0.0,
+                    angle: 0.0,
+                    offset: V::origin(),
+                    pattern_color: C::try_from_hex_str("000000").unwrap(),
+                    background_color: C::try_from_hex_str("000000").unwrap(),
+                }
+                .into(),
+                PatternInfo {
+                    rect: R::from_center_dimension(V::origin(), dimensions).expand(-2.0),
+                    pattern: crate::intermediate_representations::PatternType::Solid,
+                    weight: 1.0,
+                    spacing: 0.0,
+                    angle: 0.0,
+                    offset: V::origin(),
+                    pattern_color: color.into_color::<C>(),
+                    background_color: color.into_color::<C>(),
+                }
+                .into(),
+            ],
+        };
         if let Err(msg) = self.create_texture(
             &PathBuf::new(),
             format!("swatch-{}", color.name()),

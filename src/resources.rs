@@ -1173,8 +1173,15 @@ impl<F> FontManager<F> {
         sizes: &[u32],
         characters: &str,
     ) -> bool {
-        for font_dir in get_font_paths(project_path) {
+        'path_loop: for font_dir in get_font_paths(project_path) {
             let path_buf = font_dir.join(font_name);
+
+            match std::fs::exists(&path_buf) {
+                Ok(true) => (),
+                Ok(false) => continue 'path_loop,
+                Err(_) => continue 'path_loop,
+            }
+
             if self.batch_load_font_helper(
                 renderer,
                 FontLoadIdentifier::Path(&path_buf),
@@ -1273,6 +1280,7 @@ impl<F> FontManager<F> {
 
         // completely new font entry
         let mut temp_map = BTreeMap::new();
+        let characters = format!("{characters}{}", fonts::ASCII_GRAPHIC_CHARSET);
         for size in sizes {
             let font_result = match font_identifier {
                 FontLoadIdentifier::Path(path) => renderer.load_font(&path, *size, &characters),
@@ -1289,7 +1297,7 @@ impl<F> FontManager<F> {
                         charset: RoaringBitmap::from_iter(
                             characters
                                 .chars()
-                                .chain(fonts::BASE_CHARSET.chars())
+                                .chain(fonts::ASCII_GRAPHIC_CHARSET.chars())
                                 .map(|c| c as u32),
                         ),
                         sizes: temp_map,

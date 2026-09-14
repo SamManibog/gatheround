@@ -1,5 +1,5 @@
 /// the minimum set of characters that every font will try to load
-pub const BASE_CHARSET: &str = "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+pub const ASCII_GRAPHIC_CHARSET: &str = "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
 
 #[derive(Debug)]
 pub struct BuiltinFontData {

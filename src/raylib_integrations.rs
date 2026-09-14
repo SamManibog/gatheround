@@ -106,13 +106,15 @@ pub struct RaylibTextureCompiler<'a> {
 
 impl<'a> RaylibTextureCompiler<'a> {
     /// padding for compiled textures
-    const TEXTURE_PADDING: f32 = 2.0;
+    const TEXTURE_PADDING: u32 = 2;
 
     /// vertical padding for fonts
-    const TEXTBOX_V_PADDING: f32 = 2.0;
+    /// as a proportion of textbox size
+    const TEXTBOX_V_PADDING: f32 = 0.0;
 
     /// horizontal padding for fonts
-    const TEXTBOX_H_PADDING: f32 = 2.0;
+    /// as a proportion of textbox size
+    const TEXTBOX_H_PADDING: f32 = 0.02;
 
     /// minimum font size for automatic font sizing
     const MIN_AUTO_FONT_SIZE: f32 = 4.0;
@@ -121,10 +123,10 @@ impl<'a> RaylibTextureCompiler<'a> {
     const MIN_AUTO_LINE_SPACING: f32 = 1.05;
 
     fn get_fitting_text_size(font: &Font, text: &str, max_line_length: f32) -> f32 {
-        let base_size = 32.0;
-        let actual_size = font.measure_text(text, base_size, 0.0).x;
+        let base_size = 64.0;
+        let actual_size = (font.measure_text(text, base_size, 0.0).x).ceil();
 
-        base_size * max_line_length / actual_size
+        (base_size * max_line_length / actual_size).floor()
     }
 
     fn draw_texture(
@@ -171,10 +173,11 @@ impl<'a> RaylibTextureCompiler<'a> {
         };
 
         // the true draw rectangle
-        let rect: Rectangle = transform
-            .transform_rect(textbox.rect)
-            .expand_vertical(-Self::TEXTBOX_V_PADDING)
-            .expand_horizontal(-Self::TEXTBOX_H_PADDING);
+        let rect: Rectangle = transform.apply_to_rect(textbox.rect);
+        let rect = rect
+            .expand_vertical(rect.height * -Self::TEXTBOX_V_PADDING)
+            .expand_horizontal(rect.width * -Self::TEXTBOX_H_PADDING)
+            .round();
 
         // break text into lines
         let lines: Vec<&str> = textbox.text.split("\n").collect();
@@ -322,7 +325,7 @@ impl<'a> RaylibTextureCompiler<'a> {
         transform: &ImageTransform<Vector2>,
         target: &mut RenderTexture2D,
     ) {
-        let rect: Rectangle = transform.transform_rect(pattern.rect);
+        let rect: Rectangle = transform.apply_to_rect(pattern.rect);
 
         let pattern_texture = match pattern.pattern {
             PatternType::Solid => {
@@ -382,7 +385,7 @@ impl<'a> RaylibTextureCompiler<'a> {
         transform: &ImageTransform<Vector2>,
         target: &mut RenderTexture2D,
     ) {
-        let rect: Rectangle = transform.transform_rect(pattern.rect);
+        let rect: Rectangle = transform.apply_to_rect(pattern.rect);
         let mut hidden_painter = self.rl.begin_texture_mode(&self.thread, target);
         let mut painter = hidden_painter.begin_scissor_mode(
             rect.x.round() as i32,
@@ -401,7 +404,7 @@ impl<'a> RaylibTextureCompiler<'a> {
         pattern: &PatternInfo<Color, Rectangle, Vector2>,
         transform: &ImageTransform<Vector2>,
     ) -> Option<RenderTexture2D> {
-        let rect: Rectangle = transform.transform_rect(pattern.rect);
+        let rect: Rectangle = transform.apply_to_rect(pattern.rect);
 
         // determine actual values
         let weight = pattern.weight * transform.scale;
@@ -478,7 +481,7 @@ impl<'a> RaylibTextureCompiler<'a> {
         pattern: &PatternInfo<Color, Rectangle, Vector2>,
         transform: &ImageTransform<Vector2>,
     ) -> Option<RenderTexture2D> {
-        let rect: Rectangle = transform.transform_rect(pattern.rect);
+        let rect: Rectangle = transform.apply_to_rect(pattern.rect);
 
         // determine actual values
         let weight = pattern.weight * transform.scale;
@@ -545,7 +548,7 @@ impl<'a> RaylibTextureCompiler<'a> {
         pattern: &PatternInfo<Color, Rectangle, Vector2>,
         transform: &ImageTransform<Vector2>,
     ) -> Option<RenderTexture2D> {
-        let rect: Rectangle = transform.transform_rect(pattern.rect);
+        let rect: Rectangle = transform.apply_to_rect(pattern.rect);
 
         // determine actual values
         let weight = pattern.weight * transform.scale;
@@ -621,7 +624,7 @@ impl<'a> ITextureCompiler for RaylibTextureCompiler<'a> {
         mut visual_component_provider: VisualComponentProvider<'_, Self::Font, Self::Texture>,
     ) -> Result<TextureInfo<Self::Texture>, String> {
         // determine the bounds for the original image
-        let render_dimensions = {
+        let (render_dimensions, render_offset) = {
             // compute the base rect
             let mut rect = Rectangle::new(0.0, 0.0, 0.0, 0.0);
             for component in visual.components() {
@@ -653,17 +656,23 @@ impl<'a> ITextureCompiler for RaylibTextureCompiler<'a> {
 
             // dimensions are a square centered on the origin, containing all components
             // and some padding
-            let min: (f32, f32) = rect.min();
-            let max: (f32, f32) = rect.max();
-            let x = (min.0.abs().max(max.0.abs()) + Self::TEXTURE_PADDING) * 2.0;
-            let y = (min.1.abs().max(max.1.abs()) + Self::TEXTURE_PADDING) * 2.0;
+            let min: Vector2 = rect.min();
+            let max: Vector2 = rect.max();
+            let x = min.x.abs().max(max.x.abs()) * 2.0;
+            let y = min.y.abs().max(max.y.abs()) * 2.0;
 
-            Vector2::new(x, y)
+            let render_dimensions = Vector2::new(x, y);
+            (
+                render_dimensions,
+                render_dimensions
+                    .scaled(0.5)
+                    .add(Vector2::from_xy(1.0, 1.0).scaled(Self::TEXTURE_PADDING as f32)),
+            )
         };
 
         // create a render texture with the relevant bounds
-        let width = render_dimensions.x.ceil() as u32;
-        let height = render_dimensions.x.ceil() as u32;
+        let width = render_dimensions.x.ceil() as u32 + Self::TEXTURE_PADDING * 2;
+        let height = render_dimensions.y.ceil() as u32 + Self::TEXTURE_PADDING * 2;
 
         let mut texture = self
             .rl
@@ -671,7 +680,7 @@ impl<'a> ITextureCompiler for RaylibTextureCompiler<'a> {
             .expect("Could not create render texture.");
 
         let texture_transform = ImageTransform::<Vector2> {
-            position: Vector2::from_xy(width as f32, height as f32).scale(0.5),
+            position: render_offset,
             scale: 1.0,
         };
 
@@ -693,7 +702,7 @@ impl<'a> ITextureCompiler for RaylibTextureCompiler<'a> {
             .expect("Could not create magnified render texture.");
 
         let magnified_transform = ImageTransform::<Vector2> {
-            position: Vector2::from_xy(mangnified_width as f32, magnified_height as f32).scale(0.5),
+            position: render_offset.scale(magnification),
             scale: magnification,
         };
 
@@ -719,13 +728,13 @@ impl<'a> ITextureCompiler for RaylibTextureCompiler<'a> {
                     if let Some(image) = visual_component_provider.get_or_load_image(self, &i.path)
                     {
                         self.draw_texture(
-                            &texture_transform.transform_other(&i.transform),
+                            &texture_transform.apply_to_other(&i.transform),
                             &image,
                             &mut texture,
                             i.tint,
                         );
                         self.draw_texture(
-                            &magnified_transform.transform_other(&i.transform),
+                            &magnified_transform.apply_to_other(&i.transform),
                             &image,
                             &mut texture_magnified,
                             i.tint,

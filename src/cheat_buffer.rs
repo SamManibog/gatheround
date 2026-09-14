@@ -65,6 +65,21 @@ impl CheatBuffer {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.history.clear();
+        self.history_index = 0;
+        self.command.clear();
+        self.index = 0;
+        self.secs_since_input = 0.0;
+        self.up_cooldown = 0.0;
+        self.down_cooldown = 0.0;
+        self.left_cooldown = 0.0;
+        self.right_cooldown = 0.0;
+        self.del_cooldown = 0.0;
+        self.bs_cooldown = 0.0;
+        self.is_enter_released = true;
+    }
+
     /// decrements all cooldowns
     fn decrement_cooldowns(&mut self) {
         self.up_cooldown = self.up_cooldown.sub(1.0).max(0.0);
@@ -124,8 +139,8 @@ impl CheatBuffer {
     /// updates the buffer with keyboard inputs
     pub fn update<I: IKeyboardReader>(
         &mut self,
-        inputs: &mut I,
         delta_time: f32,
+        inputs: &mut I,
     ) -> Option<String> {
         self.secs_since_input += delta_time;
         self.decrement_cooldowns();

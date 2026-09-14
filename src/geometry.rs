@@ -124,6 +124,11 @@ pub trait IVec2: std::fmt::Debug + Sized + Clone + Copy + PartialEq + IConvexSha
         Self::from_xy(self.x().abs(), self.y().abs())
     }
 
+    /// rounds to the nearest non-fractional vector
+    fn round(&self) -> Self {
+        Self::from_xy(self.x().round(), self.y().round())
+    }
+
     /// create an isntance from this one, modifying x value by the given delta
     fn change_x(self, delta: f32) -> Self {
         Self::from_xy(self.x() + delta, self.y())
@@ -355,6 +360,14 @@ pub trait IRect: Sized + Clone + Copy + IConvexShape + Debug {
         Self::from_position_dimension(min, max.sub(min))
     }
 
+    /// creates a new rect by snapping this one's corners to the nearest
+    fn round(&self) -> Self {
+        Self::from_min_max(
+            self.min::<(f32, f32)>().round(),
+            self.max::<(f32, f32)>().round(),
+        )
+    }
+
     /// creates an instance from another rect
     fn from_rect<R: IRect>(other: &R) -> Self {
         Self::from_position_dimension::<(f32, f32), (f32, f32)>(other.min(), other.dimensions())
@@ -408,6 +421,31 @@ pub trait IRect: Sized + Clone + Copy + IConvexShape + Debug {
     /// gets the position of the bottom-right corner
     fn max<V: IVec2>(&self) -> V {
         V::from_xy(self.x() + self.width(), self.y() + self.height())
+    }
+
+    /// gets a new rect modifying x position
+    fn with_x(&self, x: f32) -> Self {
+        Self::from_position_dimension((x, self.y()), (self.width(), self.height()))
+    }
+
+    /// gets a new rect modifying y position
+    fn with_y(&self, y: f32) -> Self {
+        Self::from_position_dimension((self.x(), y), (self.width(), self.height()))
+    }
+
+    /// gets a new rect modifying center
+    fn with_center<V: IVec2>(&self, center: V) -> Self {
+        Self::from_center_dimension(center, self.dimensions::<V>())
+    }
+
+    /// gets a new rect modifying width
+    fn with_width(&self, width: f32) -> Self {
+        Self::from_position_dimension((self.x(), self.y()), (width, self.height()))
+    }
+
+    /// gets a new rect modifying height
+    fn with_height(&self, height: f32) -> Self {
+        Self::from_position_dimension((self.x(), self.y()), (self.width(), height))
     }
 
     /// gets the top left corner

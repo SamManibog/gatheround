@@ -40,7 +40,7 @@ impl<T: 'static, F: 'static> GlobalAssets<T, F> {
             font_data.filetype,
             font_data.data,
             Self::CHEAT_BUFFER_FONT_SIZE as u32,
-            fonts::BASE_CHARSET,
+            fonts::ASCII_GRAPHIC_CHARSET,
         ) {
             Ok(t) => t,
             Err(msg) => panic!("Unable to load open hand texture: {msg}"),
@@ -186,9 +186,12 @@ pub trait IPlatform: 'static {
     /// this value shouldn't change
     fn delta_time(&mut self) -> f32;
 
+    /// gets the platform's renderer
     fn renderer(&mut self) -> Self::Renderer<'_>;
 
+    /// gets the platform's texture compiler
     fn texture_compiler(&mut self) -> Self::TextureCompiler<'_>;
 
+    /// gets the platforms keyboard reader
     fn keyboard_reader(&mut self) -> Self::KeyboardReader<'_>;
 }

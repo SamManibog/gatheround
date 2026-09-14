@@ -59,23 +59,23 @@ impl<V: IVec2> ImageTransform<V> {
         }
     }
 
-    pub fn transform_vector<T1: IVec2, T2: IVec2>(&self, vector: T1) -> T2 {
-        T2::from_other(vector.scaled(self.scale).add(self.position))
+    pub fn apply_to_point<T: IVec2>(&self, vector: T) -> T {
+        T::from_other(vector.scaled(self.scale).add(self.position))
     }
 
-    pub fn transform_rect<R: IRect>(&self, rect: R) -> R {
-        let min: (f32, f32) = self.transform_vector(rect.min::<(f32, f32)>());
-        let max: (f32, f32) = self.transform_vector(rect.max::<(f32, f32)>());
+    pub fn apply_to_rect<R: IRect>(&self, rect: R) -> R {
+        let min: (f32, f32) = self.apply_to_point(rect.min::<(f32, f32)>());
+        let max: (f32, f32) = self.apply_to_point(rect.max::<(f32, f32)>());
 
         R::from_min_max(min, max)
     }
 
-    pub fn transform_other<V1: IVec2, V2: IVec2>(
+    pub fn apply_to_other<T: IVec2>(
         &self,
-        other: &ImageTransform<V1>,
-    ) -> ImageTransform<V2> {
-        ImageTransform::<V2> {
-            position: self.transform_vector(other.position),
+        other: &ImageTransform<T>,
+    ) -> ImageTransform<T> {
+        ImageTransform::<T> {
+            position: self.apply_to_point(other.position),
             scale: self.scale * other.scale,
         }
     }
@@ -585,21 +585,21 @@ impl<C: IColor, R: IRect, V: IVec2> From<VisualComponent<C, R, V>> for VisualInf
     }
 }
 
-impl<C: IColor, R: IRect, V: IVec2> From<TextboxInfo<C, R>> for VisualInfo<C, R, V> {
+impl<C: IColor, R: IRect, V: IVec2> From<TextboxInfo<C, R>> for VisualComponent<C, R, V> {
     fn from(value: TextboxInfo<C, R>) -> Self {
-        Self::from(VisualComponent::Textbox(Box::new(value)))
+        VisualComponent::Textbox(Box::new(value))
     }
 }
 
-impl<C: IColor, R: IRect, V: IVec2> From<ImageInfo<C, V>> for VisualInfo<C, R, V> {
+impl<C: IColor, R: IRect, V: IVec2> From<ImageInfo<C, V>> for VisualComponent<C, R, V> {
     fn from(value: ImageInfo<C, V>) -> Self {
-        Self::from(VisualComponent::Image(Box::new(value)))
+        VisualComponent::Image(Box::new(value))
     }
 }
 
-impl<C: IColor, R: IRect, V: IVec2> From<PatternInfo<C, R, V>> for VisualInfo<C, R, V> {
+impl<C: IColor, R: IRect, V: IVec2> From<PatternInfo<C, R, V>> for VisualComponent<C, R, V> {
     fn from(value: PatternInfo<C, R, V>) -> Self {
-        Self::from(VisualComponent::Pattern(Box::new(value)))
+        VisualComponent::Pattern(Box::new(value))
     }
 }
 
