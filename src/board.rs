@@ -126,6 +126,9 @@ pub struct BoardManager<
     /// dimensions of the visible area
     visible_rect: R,
 
+    /// the rectangle that players can move freely in during lobby_mode
+    lobby_rect: R,
+
     /// the background color of the board
     pub color: C,
 }
@@ -165,6 +168,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
             quadtree: QuadTreeManager::new(quadtree_rect),
             snap_quadtree: QuadTreeManager::new(quadtree_rect),
             visible_rect,
+            lobby_rect: visible_rect,
             color: C::from_rgba(255, 255, 255, 255),
         }
     }
@@ -2137,7 +2141,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
             TextboxInfo {
                 rect: instructions_rect.with_position(V::origin()),
                 text: format!(
-                    "1) Open your web browser\n\n2) In the address bar, enter\n     the following URL:\n     {url}\n\n3) Select a color to play as\n\n 4) Use your screen as a touchpad"
+                    "1) Connect to this device's hotspot\n\n2) Open your web browser\n\n3) In the address bar, enter\n     the following URL:\n     {url}\n\n4) Select a color to play as\n\n 5) Use your screen as a touchpad"
                 ),
                 align: crate::intermediate_representations::TextAlign::TopLeft,
                 spacing: None,
@@ -2309,6 +2313,14 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
                 self.lobby_create_swatch_piece(color, position);
             }
         }
+
+        self.lobby_rect = R::from_min_max(
+            (
+                instructions_rect.max::<V>().x() + swatch_side_length * 0.5,
+                0.0,
+            ),
+            board_rect.max::<V>(),
+        );
     }
 
     fn lobby_create_swatch_texture<IR>(
@@ -2419,7 +2431,14 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
 
     /// handles a movement event for a player, does nothing if the player does not exist
     fn lobby_handle_move(&mut self, color: PlayerColor, delta: V) {
-        let _ = self.move_player(color, delta);
+        if !self.is_playing(color) {
+            return;
+        }
+        let _ = self.set_player_position(
+            color,
+            self.lobby_rect
+                .fit_point(self.player_manager.get_position(color).unwrap().add(delta)),
+        );
     }
 
     /// handles a "raw" input event
