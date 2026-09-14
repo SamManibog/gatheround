@@ -1319,6 +1319,15 @@ pub fn get_lua_instance<
         Ok(())
     });
 
+    let board_cell = board_cell_clone.clone();
+    create_game_api_function(&lua, "get_board_dimensions", move |lua, _: ()| {
+        let board = board_cell
+            .try_borrow_mut()
+            .expect("board is already borrowed");
+
+        board.dimensions().into_lua_table(&lua)
+    });
+
     // load default update function to prevent immediate crash
     match lua.load("function update(_) end").exec() {
         Ok(()) => (),
