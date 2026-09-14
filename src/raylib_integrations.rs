@@ -1273,6 +1273,7 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
         // handle fullscreen
         if self.rl.is_key_released(KeyboardKey::KEY_F11) {
             self.rl.toggle_fullscreen();
+            self.rl.set_window_position(100, 100);
         }
 
         // draw to screen
@@ -1345,13 +1346,14 @@ impl RaylibPlatform {
         .expect("unable to set trace log level");
         let draw_layer_pool = Vec::new();
         let (mut rl, thread) = raylib::init()
+            .always_run()
             .vsync()
             .title("Board Game Host")
-            //.fullscreen()
             .size(
-                board_dimensions.x() as i32 - 100,
-                board_dimensions.y() as i32 - 100,
+                board_dimensions.x() as i32 / 2,
+                board_dimensions.y() as i32 / 2,
             )
+            .fullscreen()
             .resizable()
             .build();
         rl.set_exit_key(None);
@@ -1391,6 +1393,7 @@ impl IPlatform for RaylibPlatform {
 
     fn toggle_fullscreen(&mut self) {
         self.rl.toggle_fullscreen();
+        self.rl.set_window_position(100, 100);
     }
 
     fn delta_time(&mut self) -> f32 {
