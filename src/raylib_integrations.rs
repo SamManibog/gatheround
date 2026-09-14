@@ -1270,6 +1270,11 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
             (false, false) => self.rl.hide_cursor(),
         }
 
+        // handle fullscreen
+        if self.rl.is_key_released(KeyboardKey::KEY_F11) {
+            self.rl.toggle_fullscreen();
+        }
+
         // draw to screen
         self.rl
             .draw_texture_mode(self.thread, self.output_texture, |mut painter| {
@@ -1291,23 +1296,27 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
             self.output_texture,
         );
 
-        let padding = {
-            Vector2::from_xy(
-                self.rl.get_render_width() as f32 - board.dimensions().x(),
-                self.rl.get_render_height() as f32 - board.dimensions().y(),
-            )
-            .scaled(0.5)
-        };
-        let src_rect = Rectangle::from_position_dimension((0.0, 0.0), board.dimensions().neg_y());
-        let dst_rect = Rectangle::from_position_dimension(padding, board.dimensions());
+        let src_rect =
+            Rectangle::from_position_dimension(Vector2::origin(), board.dimensions().neg_y());
+        let scale_factor = (self.rl.get_render_width() as f32 / board.dimensions().x())
+            .min(self.rl.get_render_height() as f32 / board.dimensions().y());
+        let dst_dimensions = (board.dimensions() * scale_factor).round();
+        let padding = Vector2::from_xy(
+            self.rl.get_render_width() as f32 - dst_dimensions.x(),
+            self.rl.get_render_height() as f32 - dst_dimensions.y(),
+        )
+        .scaled(0.5)
+        .round();
+        let dst_rect = Rectangle::from_position_dimension(padding, dst_dimensions);
 
         self.rl.draw(self.thread, |mut painter| {
-            painter.clear_background(board.color);
+            painter.clear_background(Color::BLACK);
+
             painter.draw_texture_pro(
                 &self.output_texture,
                 src_rect,
                 dst_rect,
-                Vector2::from_xy(0.0, 0.0),
+                Vector2::origin(),
                 0.0,
                 Color::WHITE,
             );
@@ -1337,7 +1346,7 @@ impl RaylibPlatform {
         let draw_layer_pool = Vec::new();
         let (mut rl, thread) = raylib::init()
             .vsync()
-            .title("Gatheround Board Game Engine")
+            .title("Board Game Host")
             //.fullscreen()
             .size(
                 board_dimensions.x() as i32 - 100,

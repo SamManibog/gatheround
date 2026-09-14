@@ -2137,7 +2137,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
             TextboxInfo {
                 rect: instructions_rect.with_position(V::origin()),
                 text: format!(
-                    "1) Open your web browser.\n\n2) In the address bar, enter\n     the following URL:\n     {url}\n\n3) Select a color to play as."
+                    "1) Open your web browser\n\n2) In the address bar, enter\n     the following URL:\n     {url}\n\n3) Select a color to play as\n\n 4) Use your screen as a touchpad"
                 ),
                 align: crate::intermediate_representations::TextAlign::TopLeft,
                 spacing: None,

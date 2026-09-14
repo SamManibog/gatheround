@@ -200,10 +200,10 @@ impl GameServer {
     //pub const HOST_ADDR: &str = "192.168.137.1:443";
     pub const HOST_ADDR: &str = "127.0.0.1:8080";
 
-    pub const MAIN_PATH: &str = "/gatheround";
-    pub const INPUT_API_PATH: &str = "/gatheround/input";
-    pub const PLAYER_ASSIGNMENT_API_PATH: &str = "/gatheround/get-session";
-    pub const HAS_SESSION_API_PATH: &str = "/gatheround/has-session";
+    pub const MAIN_PATH: &str = "/games";
+    pub const INPUT_API_PATH: &str = "/games/input";
+    pub const PLAYER_ASSIGNMENT_API_PATH: &str = "/games/get-session";
+    pub const HAS_SESSION_API_PATH: &str = "/games/has-session";
 
     pub const STATIC_FILES_PATH: &str = "./static";
 

@@ -12,7 +12,7 @@ const trackpadArea = document.getElementById('trackpad');
 const threshold = 10; // Pixels moved to count as a drag instead of a tap
 
 async function sendTrackpadDelta(x, y) {
-    const response = await fetch('/gatheround/input', {
+    const response = await fetch('/games/input', {
         method: "POST",
         headers: {
             "Content-Type": "application/json"
@@ -30,7 +30,7 @@ async function sendTrackpadDelta(x, y) {
 }
 
 async function sendTrackpadPress() {
-    const response = await fetch('/gatheround/input', {
+    const response = await fetch('/games/input', {
         method: "POST",
         headers: {
             "Content-Type": "application/json"
@@ -136,7 +136,7 @@ async function handleColorButtonClick(event) {
     console.log("Attempting join as ", color);
 
     joinRequested = true;
-    const response = await fetch('/gatheround/get-session', {
+    const response = await fetch('/games/get-session', {
         method: "POST",
         headers: {
             "Content-Type": "application/json"
@@ -165,7 +165,7 @@ colorButtons.forEach(button => {
 // -----------------------------------------------------------------------------------------------------------
 
 async function hasSession() {
-    const response = await fetch('/gatheround/has-session', {
+    const response = await fetch('/games/has-session', {
         method: "POST",
     });
 
