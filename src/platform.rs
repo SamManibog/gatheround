@@ -1,14 +1,7 @@
-use std::{fmt::Debug, path::Path};
+use std::{fmt::Debug, path::{Path, PathBuf}};
 
 use crate::{
-    board::BoardManager,
-    cheat_buffer::CheatBuffer,
-    color::IColor,
-    fonts,
-    geometry::{IConvexShape, IRect, IVec2},
-    intermediate_representations::VisualInfo,
-    lua::FromLuaTable,
-    resources::{TextureInfo, VisualComponentProvider},
+    app::GameEntry, board::BoardManager, cheat_buffer::CheatBuffer, color::IColor, fonts, geometry::{IConvexShape, IRect, IVec2}, intermediate_representations::VisualInfo, lua::FromLuaTable, resources::{TextureInfo, VisualComponentProvider}
 };
 
 #[derive(Debug)]
@@ -18,8 +11,8 @@ pub struct GlobalAssets<T, F> {
     pub cheat_buffer_font: F,
 }
 
-const OPEN_HAND_BYTES: &[u8] = include_bytes!("open_hand.png");
-const CLOSED_HAND_BYTES: &[u8] = include_bytes!("closed_hand.png");
+pub const OPEN_HAND_BYTES: &[u8] = include_bytes!("open_hand.png");
+pub const CLOSED_HAND_BYTES: &[u8] = include_bytes!("closed_hand.png");
 
 impl<T: 'static, F: 'static> GlobalAssets<T, F> {
     pub const CHEAT_BUFFER_FONT_SIZE: f32 = 28.0;
@@ -181,6 +174,10 @@ pub trait IPlatform: 'static {
 
     /// toggle fullscreen mode
     fn toggle_fullscreen(&mut self);
+
+    /// handle an update cycle for the game picker
+    /// to start a game, return the directory of the game to start
+    fn run_game_picker(&mut self, games: &[GameEntry<Self::Texture>]) -> Option<PathBuf>;
 
     /// the time between frames
     /// this value shouldn't change

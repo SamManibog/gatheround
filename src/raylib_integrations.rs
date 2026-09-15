@@ -14,8 +14,8 @@ use crate::{
     color::IColor,
     geometry::{ConvexHull, IConvexShape, IRect, IVec2},
     intermediate_representations::{
-        Alignment, ImageTransform, PatternInfo, PatternType, TextboxInfo, VisualComponent,
-        VisualInfo,
+        Alignment, ImagePosition, ImageTransform, PatternInfo, PatternType, TextboxInfo,
+        VisualComponent, VisualInfo,
     },
     platform::{GlobalAssets, IKeyboardReader, IPlatform, IRenderer, ITextureCompiler},
     resources::{TextureInfo, VisualComponentProvider},
@@ -131,26 +131,59 @@ impl<'a> RaylibTextureCompiler<'a> {
 
     fn draw_texture(
         &mut self,
-        transform: &ImageTransform<Vector2>,
+        position: ImagePosition<Rectangle, Vector2>,
         texture: &RenderTexture2D,
         target: &mut RenderTexture2D,
         tint: Color,
     ) {
-        self.rl
-            .draw_texture_mode(&self.thread, target, |mut painter| {
-                let src_rect = Rectangle::from_position_dimension(
-                    (0.0, 0.0),
-                    (texture.width() as f32, texture.height() as f32).neg_y(),
-                );
-                let dst_rect = Rectangle::from_center_dimension(
-                    transform.position,
-                    src_rect
-                        .dimensions::<Vector2>()
-                        .scaled(transform.scale)
-                        .neg_y(),
-                );
-                painter.draw_texture_pro(texture, src_rect, dst_rect, Vector2::ZERO, 0.0, tint);
-            });
+        match position {
+            ImagePosition::Transform(transform) => {
+                self.rl
+                    .draw_texture_mode(&self.thread, target, |mut painter| {
+                        let src_rect = Rectangle::from_position_dimension(
+                            (0.0, 0.0),
+                            (texture.width() as f32, texture.height() as f32).neg_y(),
+                        );
+                        let dst_rect = Rectangle::from_center_dimension(
+                            transform.position,
+                            src_rect
+                                .dimensions::<Vector2>()
+                                .scaled(transform.scale)
+                                .neg_y(),
+                        );
+                        painter.draw_texture_pro(
+                            texture,
+                            src_rect,
+                            dst_rect,
+                            Vector2::ZERO,
+                            0.0,
+                            tint,
+                        );
+                    });
+            }
+
+            ImagePosition::FitRect(rect) => {
+                self.rl
+                    .draw_texture_mode(&self.thread, target, |mut painter| {
+                        let src_rect = Rectangle::from_position_dimension(
+                            (0.0, 0.0),
+                            (texture.width() as f32, texture.height() as f32).neg_y(),
+                        );
+                        let dst_rect = rect.centered_with_aspect_ratio((
+                            texture.width() as f32,
+                            texture.height() as f32,
+                        ));
+                        painter.draw_texture_pro(
+                            texture,
+                            src_rect,
+                            dst_rect,
+                            Vector2::ZERO,
+                            0.0,
+                            tint,
+                        );
+                    });
+            }
+        }
     }
 
     fn draw_textbox(
@@ -633,22 +666,25 @@ impl<'a> ITextureCompiler for RaylibTextureCompiler<'a> {
                         rect = rect.bounding(&t.rect);
                     }
 
-                    VisualComponent::Image(i) => {
-                        if let Some(image_texture) =
-                            visual_component_provider.get_or_load_image(self, &i.path)
-                        {
-                            let r = Rectangle::from_center_dimension(
-                                i.transform.position,
-                                Vector2::from_xy(
-                                    image_texture.width() as f32,
-                                    image_texture.height() as f32,
-                                )
-                                .scaled(i.transform.scale),
-                            );
+                    VisualComponent::Image(i) => match i.position_data {
+                        ImagePosition::FitRect(r) => rect = rect.bounding(&r),
+                        ImagePosition::Transform(transform) => {
+                            if let Some(image_texture) =
+                                visual_component_provider.get_or_load_image(self, &i.path)
+                            {
+                                let r = Rectangle::from_center_dimension(
+                                    transform.position,
+                                    Vector2::from_xy(
+                                        image_texture.width() as f32,
+                                        image_texture.height() as f32,
+                                    )
+                                    .scaled(transform.scale),
+                                );
 
-                            rect = rect.bounding(&r);
+                                rect = rect.bounding(&r);
+                            }
                         }
-                    }
+                    },
 
                     VisualComponent::Pattern(p) => rect = rect.bounding(&p.rect),
                 }
@@ -728,13 +764,13 @@ impl<'a> ITextureCompiler for RaylibTextureCompiler<'a> {
                     if let Some(image) = visual_component_provider.get_or_load_image(self, &i.path)
                     {
                         self.draw_texture(
-                            &texture_transform.apply_to_other(&i.transform),
+                            texture_transform.apply_to_image_position(&i.position_data),
                             &image,
                             &mut texture,
                             i.tint,
                         );
                         self.draw_texture(
-                            &magnified_transform.apply_to_other(&i.transform),
+                            magnified_transform.apply_to_image_position(&i.position_data),
                             &image,
                             &mut texture_magnified,
                             i.tint,
@@ -1297,18 +1333,16 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
             self.output_texture,
         );
 
+        let render_rect = Rectangle::from_position_dimension(
+            Vector2::origin(),
+            Vector2::from_xy(
+                self.rl.get_render_width() as f32,
+                self.rl.get_render_height() as f32,
+            ),
+        );
         let src_rect =
             Rectangle::from_position_dimension(Vector2::origin(), board.dimensions().neg_y());
-        let scale_factor = (self.rl.get_render_width() as f32 / board.dimensions().x())
-            .min(self.rl.get_render_height() as f32 / board.dimensions().y());
-        let dst_dimensions = (board.dimensions() * scale_factor).round();
-        let padding = Vector2::from_xy(
-            self.rl.get_render_width() as f32 - dst_dimensions.x(),
-            self.rl.get_render_height() as f32 - dst_dimensions.y(),
-        )
-        .scaled(0.5)
-        .round();
-        let dst_rect = Rectangle::from_position_dimension(padding, dst_dimensions);
+        let dst_rect = render_rect.centered_with_aspect_ratio(board.dimensions());
 
         self.rl.draw(self.thread, |mut painter| {
             painter.clear_background(Color::BLACK);
@@ -1348,7 +1382,7 @@ impl RaylibPlatform {
         let (mut rl, thread) = raylib::init()
             .always_run()
             .vsync()
-            .title("Board Game Host")
+            .title("Game Host")
             .size(
                 board_dimensions.x() as i32 / 2,
                 board_dimensions.y() as i32 / 2,
@@ -1419,5 +1453,60 @@ impl IPlatform for RaylibPlatform {
 
     fn keyboard_reader(&mut self) -> Self::KeyboardReader<'_> {
         RaylibKeyboardReader { rl: &mut self.rl }
+    }
+
+    fn run_game_picker(
+        &mut self,
+        games: &[crate::app::GameEntry<Self::Texture>],
+    ) -> Option<std::path::PathBuf> {
+        if games.is_empty() {
+            // placeholder, delete later
+            self.rl.draw(&self.thread, |mut p| {
+                p.draw_text("No games to play!", 40, 40, 32, Color::BLACK);
+            });
+
+            return None;
+        }
+
+        /// game entries to draw per row
+        const ENTRIES_PER_ROW: u32 = 3;
+
+        /// aspect ratio of entries
+        const ENTRY_ASPECT_RATIO: f32 = 4.0 / 3.0;
+
+        /// padding between entries as proportion of screen width
+        const PADDING_RATIO: f32 = 0.05;
+
+        let max_entries_per_col = games.len().div_ceil(ENTRIES_PER_ROW as usize);
+        let padding = self.rl.get_render_width() as f32 * PADDING_RATIO;
+        let entry_width = (self.rl.get_render_width() as f32
+            - PADDING_RATIO * (ENTRIES_PER_ROW + 1) as f32)
+            / ENTRIES_PER_ROW as f32;
+        let entry_dimensions = Vector2 {
+            x: entry_width,
+            y: entry_width / ENTRY_ASPECT_RATIO,
+        };
+        let entry_rect = Rectangle {
+            x: padding,
+            y: padding,
+            width: (entry_dimensions.x + padding) * ENTRIES_PER_ROW as f32,
+            height: (entry_dimensions.y + padding) * max_entries_per_col as f32,
+        };
+
+        let entry_rect_iter = entry_rect
+            .evenly_spaced_rects(entry_dimensions.add(Vector2::from_xy(padding, padding)))
+            .map(|r| {
+                r.with_width(entry_dimensions.x)
+                    .with_height(entry_dimensions.y)
+            });
+
+        if self.rl.is_key_released(KeyboardKey::KEY_F11) {
+            self.rl.toggle_fullscreen();
+            self.rl.set_window_position(100, 100);
+        }
+
+        for entry_rect in entry_rect_iter {}
+
+        todo!()
     }
 }

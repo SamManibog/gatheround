@@ -225,11 +225,11 @@ impl<V: IVec2> PileManager<V> {
     /// panics if the piece pile being pushed is non-existent
     pub fn push_pile(&mut self, bottom_pile: PieceEntity, top_pile: PieceEntity) {
         debug_assert!(
-            !self.is_pile(bottom_pile),
+            self.is_pile(bottom_pile),
             "Attempted to push to a non-existent pile."
         );
         debug_assert!(
-            !self.is_pile(top_pile),
+            self.is_pile(top_pile),
             "Attempted to push a non-existent pile."
         );
 
@@ -263,11 +263,12 @@ impl<V: IVec2> PileManager<V> {
             "You may not push an already-piled piece onto different pile."
         );
         debug_assert!(
-            !self.is_pile(pile),
+            self.is_pile(pile),
             "Attempted to push to a non-existent pile."
         );
 
         self.piles.get_mut(pile).unwrap().pieces.push_back(piece);
+        self.piece_pile_map.insert(piece, pile);
     }
 
     /// adds a piece to the bottom of the given pile
@@ -278,11 +279,12 @@ impl<V: IVec2> PileManager<V> {
             "You may not push an already-piled piece onto different pile."
         );
         debug_assert!(
-            !self.is_pile(pile),
+            self.is_pile(pile),
             "Attempted to push to a non-existent pile."
         );
 
         self.piles.get_mut(pile).unwrap().pieces.push_front(piece);
+        self.piece_pile_map.insert(piece, pile);
     }
 
     /// pops the bottom piece from a pile
@@ -963,7 +965,7 @@ impl<V: IVec2> PlayerManager<V> {
 
     /// checks if the given player is visible
     pub fn is_visible(&self, player: PlayerColor) -> bool {
-        !self.hidden.contains(player)
+        self.is_playing(player) && !self.hidden.contains(player)
     }
 
     /// checks if a player is contained
@@ -1374,6 +1376,25 @@ impl<T, F> Default for TextureManager<T, F> {
 }
 
 impl<T, F> TextureManager<T, F> {
+
+    /// adds a new image, overwritting it if it already exists
+    pub fn add_image(&mut self, name: String, image: T) {
+        self.images.insert(name, image);
+    }
+
+    /// adds a new texture
+    pub fn add_texture(&mut self, name: Option<String>, texture: TextureInfo<T>) -> Result<TextureEntity, String> {
+        if let Some(n) = name {
+            if let Ok(entity) = self.textures.add_named(n.clone(), texture) {
+                Ok(entity)
+            } else {
+                Err(format!("Texture with name '{n}' already exists."))
+            }
+        } else {
+            Ok(self.textures.add(texture))
+        }
+    }
+
     /// attempts to create a new texture, returning its entity on success
     /// textures may be assigned an optional name that can be used to identify it
     pub fn load_texture<C, R, V, IR>(
@@ -1398,16 +1419,7 @@ impl<T, F> TextureManager<T, F> {
         };
 
         let texture = renderer.compile_visual(visual, magnification_dimensions, provider)?;
-
-        if let Some(n) = name {
-            if let Ok(entity) = self.textures.add_named(n.clone(), texture) {
-                Ok(entity)
-            } else {
-                Err(format!("Texture with name '{n}' already exists."))
-            }
-        } else {
-            Ok(self.textures.add(texture))
-        }
+        self.add_texture(name, texture)
     }
 
     /// removes a texture if it exists, returning it and its name

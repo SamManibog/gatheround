@@ -201,7 +201,7 @@ pub fn get_lua_instance<
                 .try_borrow_mut()
                 .expect("platform is already borrowed");
             let mut texture_compiler = platform.texture_compiler();
-            let texture_result = board.create_texture(&project_path, name, &visual, &mut texture_compiler);
+            let texture_result = board.create_texture(&project_path, Some(name), &visual, &mut texture_compiler);
 
             match texture_result {
                 Ok(_) => Ok(()),

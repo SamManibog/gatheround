@@ -4,6 +4,11 @@
 const joinPage = document.getElementById('joinPage');
 const inputPage = document.getElementById('inputPage');
 
+function attemptReconnect() {
+    inputPage.classList.add("hidden");
+    joinPage.classList.remove("hidden");
+}
+
 // -----------------------------------------------------------------------------------------------------------
 // INPUT PAGE LOGIC
 // -----------------------------------------------------------------------------------------------------------
@@ -148,6 +153,9 @@ async function handleColorButtonClick(event) {
 
     if (!response.ok) {
         console.error(`ERROR [${response.status}]: ${await response.text()}`);
+        if (response.status == 401) {
+            attemptReconnect();
+        }
     } else {
         playerColor = color;
         console.log("Game joined successfully as ", playerColor);

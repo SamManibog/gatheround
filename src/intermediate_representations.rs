@@ -15,10 +15,19 @@ use crate::{
 
 /// a transform for an image, only covers offset and scale
 /// (scale is applied before position)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct ImageTransform<V: IVec2> {
     pub position: V,
     pub scale: f32,
+}
+
+impl<V: IVec2> FromLuaValue for ImageTransform<V> {
+    fn try_from_lua_value(value: &Value) -> Result<Self, String> {
+        match value {
+            Value::Table(t) => Self::try_from_lua_table(&t),
+            _ => Err(format!("non-table value.")),
+        }
+    }
 }
 
 impl<V: IVec2> FromLuaTable for ImageTransform<V> {
@@ -70,35 +79,83 @@ impl<V: IVec2> ImageTransform<V> {
         R::from_min_max(min, max)
     }
 
-    pub fn apply_to_other<T: IVec2>(
-        &self,
-        other: &ImageTransform<T>,
-    ) -> ImageTransform<T> {
+    pub fn apply_to_other<T: IVec2>(&self, other: ImageTransform<T>) -> ImageTransform<T> {
         ImageTransform::<T> {
             position: self.apply_to_point(other.position),
             scale: self.scale * other.scale,
+        }
+    }
+
+    pub fn apply_to_image_position<T: IVec2, R: IRect>(
+        &self,
+        other: &ImagePosition<R, T>,
+    ) -> ImagePosition<R, T> {
+        match other {
+            ImagePosition::FitRect(r) => ImagePosition::FitRect(self.apply_to_rect(*r)),
+            ImagePosition::Transform(t) => ImagePosition::Transform(self.apply_to_other(*t)),
         }
     }
 }
 
 /// information required to put an image on a piece
 #[derive(Debug, Clone)]
-pub struct ImageInfo<C: IColor, V: IVec2> {
-    pub transform: ImageTransform<V>,
+pub struct ImageInfo<C: IColor, R: IRect, V: IVec2> {
+    pub position_data: ImagePosition<R, V>,
     pub path: String,
     pub tint: C,
 }
 
-impl<C: IColor, V: IVec2> FromLuaTable for ImageInfo<C, V> {
+/// size and position data for an image
+/// transform is simple position + scale
+/// content rect is the rectangle to fit the image to
+/// it centers the image scales it to fit,and preserving aspect ratio
+#[derive(Debug, Clone)]
+pub enum ImagePosition<R: IRect, V: IVec2> {
+    FitRect(R),
+    Transform(ImageTransform<V>),
+}
+
+impl<C: IColor, R: IRect, V: IVec2> FromLuaTable for ImageInfo<C, R, V> {
     fn try_from_lua_table(table: &Table) -> Result<Self, String> {
-        let transform = if let Ok(t) = ImageTransform::<V>::try_from_lua_table(table) {
-            t
-        } else if let Ok(transform_table) = table.raw_get::<Table>("transform")
-            && let Ok(t) = ImageTransform::<V>::try_from_lua_table(&transform_table)
-        {
-            t
+        let transform_result = if let Ok(transform_val) = table.raw_get::<Value>("transform") {
+            if transform_val.is_nil() {
+                Err(())
+            } else {
+                match ImageTransform::<V>::try_from_lua_value(&transform_val) {
+                    Ok(t) => Ok(t),
+                    Err(msg) => return Err(format!("Invalid transform field: {msg}")),
+                }
+            }
         } else {
-            return Err("Missing transform field.".to_string());
+            Err(())
+        };
+
+        let rect_result = if let Ok(rect_val) = table.raw_get::<Value>("rect") {
+            match rect_val {
+                Value::Nil => Err(()),
+                Value::Table(t) => match valid_finite_rect_from_lua_table(&t) {
+                    Ok(t) => Ok(t),
+                    Err(msg) => return Err(format!("Invalid rect field: {msg}")),
+                },
+                _ => return Err(format!("Invalid rect field: non-table value")),
+            }
+        } else {
+            Err(())
+        };
+
+        let position = match (transform_result, rect_result) {
+            (Ok(_), Ok(_)) => {
+                return Err(format!(
+                    "Got both rect and transform field. Only one may be specified."
+                ));
+            }
+            (Ok(transform), Err(_)) => ImagePosition::Transform(transform),
+            (Err(_), Ok(rect)) => ImagePosition::FitRect(rect),
+            (Err(_), Err(_)) => {
+                return Err(format!(
+                    "Missing rect and transform field. One or the other must be specified."
+                ));
+            }
         };
 
         let path = if let Ok(p) = table.raw_get::<String>("path") {
@@ -118,7 +175,7 @@ impl<C: IColor, V: IVec2> FromLuaTable for ImageInfo<C, V> {
 
         Ok(Self {
             tint,
-            transform,
+            position_data: position,
             path,
         })
     }
@@ -535,7 +592,7 @@ impl<C: IColor, R: IRect, V: IVec2> FromLuaTable for PatternInfo<C, R, V> {
 #[derive(Debug, Clone)]
 pub enum VisualComponent<C: IColor, R: IRect, V: IVec2> {
     Textbox(Box<TextboxInfo<C, R>>),
-    Image(Box<ImageInfo<C, V>>),
+    Image(Box<ImageInfo<C, R, V>>),
     Pattern(Box<PatternInfo<C, R, V>>),
 }
 
@@ -591,8 +648,8 @@ impl<C: IColor, R: IRect, V: IVec2> From<TextboxInfo<C, R>> for VisualComponent<
     }
 }
 
-impl<C: IColor, R: IRect, V: IVec2> From<ImageInfo<C, V>> for VisualComponent<C, R, V> {
-    fn from(value: ImageInfo<C, V>) -> Self {
+impl<C: IColor, R: IRect, V: IVec2> From<ImageInfo<C, R, V>> for VisualComponent<C, R, V> {
+    fn from(value: ImageInfo<C, R, V>) -> Self {
         VisualComponent::Image(Box::new(value))
     }
 }

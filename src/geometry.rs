@@ -323,6 +323,18 @@ pub trait IRect: Sized + Clone + Copy + IConvexShape + Debug {
         Self::from_position_dimension(position, self.dimensions::<V>())
     }
 
+    /// creates the rect that fits centered on this one with the given aspect dimensions
+    fn centered_with_aspect_ratio<V: IVec2>(&self, aspect_dimensions: V) -> Self {
+        let scale_width = self.width() / aspect_dimensions.x();
+        let scale_height = self.height() / aspect_dimensions.y();
+
+        let scale = scale_width.min(scale_height);
+
+        let dimensions: V = aspect_dimensions.scaled(scale);
+
+        Self::from_center_dimension(self.center::<V>(), dimensions)
+    }
+
     /// fits the given rectangle into this one by translating it minimally
     fn fit<R: IRect>(&self, other: R) -> Self {
         type V = (f32, f32);

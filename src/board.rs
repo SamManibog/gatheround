@@ -7,6 +7,7 @@ use std::{
 use mlua::Lua;
 
 use crate::{
+    app::GameEntry,
     color::IColor,
     ecs::{
         DenseComponentManager, DenseSet, EntityTrait, NamedEntityManager, ResourceManager,
@@ -15,8 +16,8 @@ use crate::{
     geometry::{self, CollisionShape, IConvexShape, IRect, IVec2, NumericF32, RigidTransform},
     input::{InputEvent, PlayerInputEvent},
     intermediate_representations::{
-        CollisionShapeIR, EntityIdentifier, PatternInfo, PieceColliderIR, PieceIR, PileIR,
-        TextboxInfo, VisualComponent, VisualInfo,
+        CollisionShapeIR, EntityIdentifier, ImageInfo, ImagePosition, PatternInfo, PatternType,
+        PieceColliderIR, PieceIR, PileIR, TextboxInfo, VisualComponent, VisualInfo,
     },
     lua::FromLuaTable,
     platform::{GlobalAssets, ITextureCompiler},
@@ -126,11 +127,16 @@ pub struct BoardManager<
     /// dimensions of the visible area
     visible_rect: R,
 
-    /// the rectangle that players can move freely in during lobby_mode
-    lobby_rect: R,
-
     /// the background color of the board
     pub color: C,
+
+    /// the rectangle that players can move freely in during lobby_mode
+    /// relevant in lobby mode only
+    lobby_rect: R,
+
+    /// maximum scroll position for game selector mode
+    /// relevant in selector mode only
+    max_selector_scroll: f32,
 }
 
 impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + From<R>, T, F>
@@ -168,8 +174,11 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
             quadtree: QuadTreeManager::new(quadtree_rect),
             snap_quadtree: QuadTreeManager::new(quadtree_rect),
             visible_rect,
-            lobby_rect: visible_rect,
             color: C::from_rgba(255, 255, 255, 255),
+
+            lobby_rect: visible_rect,
+
+            max_selector_scroll: 0.0,
         }
     }
 
@@ -1049,7 +1058,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
                     .get_texture(*texture_entity)
                     .unwrap()
                     .texture;
-                let transform = self.entity_transforms.get(piece).unwrap();
+                let transform = self.get_entity_global_transform(piece);
                 let draw_layer = self.get_draw_layer(piece).unwrap();
                 let colliders = if self.debug_entities.contains(piece) {
                     self.piece_colliders.get(piece).map(|l| l.as_slice())
@@ -1057,7 +1066,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
                     None
                 };
 
-                Some((texture, colliders, *transform, draw_layer))
+                Some((texture, colliders, transform, draw_layer))
             },
         }
     }
@@ -1086,14 +1095,14 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
                     .get_texture(*texture_entity)
                     .unwrap()
                     .texture;
-                let transform = self.entity_transforms.get(piece).unwrap();
+                let transform = self.get_entity_global_transform(piece);
                 let colliders = if self.debug_entities.contains(piece) {
                     self.piece_colliders.get(piece).map(|l| l.as_slice())
                 } else {
                     None
                 };
 
-                Some((texture, colliders, *transform))
+                Some((texture, colliders, transform))
             },
         }
     }
@@ -1151,24 +1160,22 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
     pub fn create_texture<IR>(
         &mut self,
         project_path: &Path,
-        name: String,
+        name: Option<String>,
         visual: &VisualInfo<C, R, V>,
         renderer: &mut IR,
-    ) -> Result<(), String>
+    ) -> Result<TextureEntity, String>
     where
         C: IColor,
         IR: ITextureCompiler<Font = F, Texture = T, Color = C, Rectangle = R, Vector2 = V>,
     {
         let magnification_dimensions = self.dimensions().scaled(Self::MAGNIFICATION_RATIO);
-        self.texture_manager.load_texture(
+        Ok(self.texture_manager.load_texture(
             project_path,
-            Some(name.clone()),
+            name,
             visual,
             magnification_dimensions,
             renderer,
-        )?;
-
-        Ok(())
+        )?)
     }
 
     pub fn is_playing(&self, color: PlayerColor) -> bool {
@@ -1575,7 +1582,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
             }
         }
 
-        unreachable!()
+        None
     }
 
     /// makes a piece show its collision shapes
@@ -1711,10 +1718,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
     /// pile contains this piece
     fn get_parent_transform(&self, entity: PieceEntity) -> RigidTransform<V> {
         match self.pile_manager.get_containing_pile(entity) {
-            Some(pile) => *self
-                .entity_transforms
-                .get(pile)
-                .unwrap_or(&RigidTransform::identity()),
+            Some(pile) => *self.entity_transforms.get(pile).unwrap(),
             None => RigidTransform::identity(),
         }
     }
@@ -2006,7 +2010,12 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
     /// checks if the given item is visible
     pub fn is_visible(&self, entity: EntityIdentifier<PieceEntity>) -> Result<bool, String> {
         let entity = self.validate_entity(entity)?;
-        Ok(!self.hidden_entities.contains(entity))
+        let player_hidden = if let Some(player) = self.player_manager.get_holder(entity) {
+            !self.player_manager.is_visible(player)
+        } else {
+            false
+        };
+        Ok(!self.hidden_entities.contains(entity) && !player_hidden)
     }
 
     /// makes an item visible
@@ -2048,7 +2057,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
     // --------------------------------------------------------------------------------------------------
 
     /// title height as a proportion of board height
-    pub const LOBBY_TITLE_HEIGHT_FACTOR: f32 = 0.07;
+    pub const UI_TITLE_RATIO: f32 = 0.07;
 
     /// background weight as a proportion of board shortest board dimension,
     pub const LOBBY_BACKGROUND_WEIGHT: f32 = 0.1;
@@ -2060,7 +2069,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
     pub const LOBBY_REMAINING_COLORS_HEIGHT_FACTOR: f32 = 0.06;
 
     /// padding for content as a proportion of the minimum board dimension (width or height)
-    pub const LOBBY_PADDING: f32 = 0.1;
+    pub const UI_PADDING_RATIO: f32 = 0.1;
 
     /// the max side length dimension of swatches
     pub const LOBBY_MAX_SWATCH_LENGTH: f32 = 150.0;
@@ -2076,15 +2085,14 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
 
         // generate assets based on board dimensions
         let board_rect = R::from_position_dimension(V::origin(), self.dimensions());
-        let size_scalar = self.dimensions().x().min(self.dimensions().y());
-        let padding = (size_scalar * Self::LOBBY_PADDING).round();
+        let padding = (self.dimensions().y() * Self::UI_PADDING_RATIO).round();
         let [_, title_rect, _, content_rect, _] = board_rect.divide_proportions_vertical(
             &[
-                Self::LOBBY_PADDING,
-                Self::LOBBY_TITLE_HEIGHT_FACTOR,
-                Self::LOBBY_PADDING,
-                1.0_f32 - Self::LOBBY_TITLE_HEIGHT_FACTOR - 3.0 * Self::LOBBY_PADDING,
-                Self::LOBBY_PADDING,
+                Self::UI_PADDING_RATIO,
+                Self::UI_TITLE_RATIO,
+                Self::UI_PADDING_RATIO,
+                1.0_f32 - Self::UI_TITLE_RATIO - 3.0 * Self::UI_PADDING_RATIO,
+                Self::UI_PADDING_RATIO,
             ],
             0.0,
         );
@@ -2092,11 +2100,11 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
         let [_, instructions_rect, _, swatch_content_rect, _] = content_rect
             .divide_proportions_horizontal(
                 &[
-                    Self::LOBBY_PADDING,
+                    Self::UI_PADDING_RATIO,
                     Self::LOBBY_INSTRUCTIONS_WIDTH_FACTOR,
-                    Self::LOBBY_PADDING,
-                    1.0_f32 - Self::LOBBY_INSTRUCTIONS_WIDTH_FACTOR - 3.0 * Self::LOBBY_PADDING,
-                    Self::LOBBY_PADDING,
+                    Self::UI_PADDING_RATIO,
+                    1.0_f32 - Self::LOBBY_INSTRUCTIONS_WIDTH_FACTOR - 3.0 * Self::UI_PADDING_RATIO,
+                    Self::UI_PADDING_RATIO,
                 ],
                 0.0,
             );
@@ -2120,9 +2128,12 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
             font: String::from("ptserif-bold.ttf"),
             color: C::try_from_hex_str("000000").unwrap(),
         }));
-        if let Err(msg) =
-            self.create_texture(&PathBuf::new(), String::from("title"), &title_ir, renderer)
-        {
+        if let Err(msg) = self.create_texture(
+            &PathBuf::new(),
+            Some(String::from("title")),
+            &title_ir,
+            renderer,
+        ) {
             panic!("Could not load lobby title texture: {msg}");
         }
         if let Err(msg) = self.create_piece(PieceIR {
@@ -2152,7 +2163,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
         ));
         if let Err(msg) = self.create_texture(
             &PathBuf::new(),
-            String::from("instructions"),
+            Some(String::from("instructions")),
             &instructions_ir,
             renderer,
         ) {
@@ -2182,7 +2193,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
             }));
         if let Err(msg) = self.create_texture(
             &PathBuf::new(),
-            String::from("remaining"),
+            Some(String::from("remaining")),
             &remaining_ir,
             renderer,
         ) {
@@ -2200,35 +2211,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
         }
 
         // make background
-        let background_ir: VisualInfo<C, R, V> =
-            VisualInfo::from(VisualComponent::from(PatternInfo {
-                rect: board_rect.with_center(V::origin()),
-                pattern: crate::intermediate_representations::PatternType::Checkers,
-                pattern_color: C::try_from_hex_str("E8E8E8").unwrap(),
-                background_color: C::try_from_hex_str("E0E0E0").unwrap(),
-                offset: V::origin(),
-                spacing: 0.0,
-                angle: 45.0,
-                weight: Self::LOBBY_BACKGROUND_WEIGHT * size_scalar,
-            }));
-        if let Err(msg) = self.create_texture(
-            &PathBuf::new(),
-            String::from("background"),
-            &background_ir,
-            renderer,
-        ) {
-            panic!("Could not load lobby background texture: {msg}");
-        }
-        if let Err(msg) = self.create_piece(PieceIR {
-            name: None,
-            texture: String::from("background"),
-            transform: board_rect.center::<V>().into(),
-            colliders: Vec::new(),
-            draw_layer: -10,
-            tags: Vec::new(),
-        }) {
-            panic!("Could not load lobby background piece: {msg}");
-        }
+        self.ui_create_background(renderer);
 
         // make swatches
         let major_axis_length = swatches_rect.width().max(swatches_rect.height());
@@ -2359,7 +2342,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
         };
         if let Err(msg) = self.create_texture(
             &PathBuf::new(),
-            format!("swatch-{}", color.name()),
+            Some(format!("swatch-{}", color.name())),
             &swatch_ir,
             renderer,
         ) {
@@ -2459,6 +2442,442 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
     pub fn lobby_handle_inputs(&mut self, inputs: impl Iterator<Item = PlayerInputEvent>) {
         for input in inputs {
             self.lobby_handle_input(input);
+        }
+    }
+
+    // --------------------------------------------------------------------------------------------------
+    // game selector board functionality ----------------------------------------------------------------
+    // --------------------------------------------------------------------------------------------------
+
+    pub const SELECTOR_ENTRY_COLUMNS: u32 = 3;
+    pub const SELECTOR_ENTRY_ASPECT_RATIO: f32 = 4.0 / 3.0;
+
+    /// enters game selector mode
+    /// with the given player color having sole control over inputs
+    /// returns a map from piece entities to the game paths
+    pub fn game_selector_mode<IR>(
+        &mut self,
+        renderer: &mut IR,
+        host: PlayerColor,
+        game_list: impl Iterator<Item = GameEntry<T>>,
+    ) where
+        IR: ITextureCompiler<Font = F, Texture = T, Color = C, Rectangle = R, Vector2 = V>,
+    {
+        // setup board state
+        self.reset();
+        for player in self.player_manager.iter().collect::<Vec<PlayerColor>>() {
+            self.player_manager.hide(player);
+        }
+        self.player_manager.show(host);
+        self.player_manager
+            .set_position(host, self.dimensions().scaled(0.5));
+
+        // generate assets based on board dimensions
+        let padding = (self.dimensions().y() * Self::UI_PADDING_RATIO).round();
+
+        // generate background
+        self.ui_create_background(renderer);
+
+        // generate moving pile for scrolling
+        let pile_ir = PileIR {
+            name: Some("scroller".into()),
+            transform: V::origin().into(),
+            snap_offset: V::origin(),
+            snap_radius: 0.0,
+            draw_layer: 0,
+            tags: Vec::new(),
+        };
+        let pile = match self.create_pile(pile_ir) {
+            Ok(p) => p,
+            Err(msg) => panic!("Could not create selector scroll pile: {msg}"),
+        };
+
+        // generate title
+        let title_height = self.dimensions().y() * Self::UI_TITLE_RATIO;
+        let title_texture_ir = VisualInfo {
+            components: vec![
+                TextboxInfo {
+                    rect: R::from_position_dimension(
+                        V::from_xy(0.0, padding),
+                        V::from_xy(self.dimensions().x(), title_height),
+                    ),
+                    text: String::from("Select a Game"),
+                    font: String::from("ptserif.ttf"),
+                    align: crate::intermediate_representations::TextAlign::CenterCenter,
+                    size: None,
+                    spacing: None,
+                    color: C::try_from_hex_str("000000").unwrap(),
+                }
+                .into(),
+            ],
+        };
+        let title_texture =
+            match self.create_texture(&PathBuf::new(), None, &title_texture_ir, renderer) {
+                Ok(t) => t,
+                Err(msg) => panic!("Failed to create selector title texture: {msg}"),
+            };
+        let title_piece_ir = PieceIR {
+            name: None,
+            texture: "background".into(),
+            transform: V::origin().into(),
+            colliders: Vec::new(),
+            draw_layer: -5,
+            tags: Vec::new(),
+        };
+        let title_piece = match self.create_piece(title_piece_ir) {
+            Ok(p) => p,
+            Err(msg) => panic!("Failed to create selector title piece: {msg}"),
+        };
+        self.piece_textures.insert(title_piece, title_texture);
+        self.pile_top_unchecked(pile, title_piece);
+
+        // generate entities for each entry
+        let entry_dimensions = {
+            let width =
+                (self.dimensions().x() - padding * (Self::SELECTOR_ENTRY_COLUMNS + 1) as f32) / 3.0;
+            let height = width / Self::SELECTOR_ENTRY_ASPECT_RATIO;
+            V::from_xy(width, height)
+        };
+        self.create_collision_shape(
+            String::from("entry"),
+            CollisionShape(vec![S::from(R::from_center_dimension(
+                V::origin(),
+                entry_dimensions,
+            ))]),
+        )
+        .expect("unable to create entry collision shape");
+        let mut position_iter = Self::selector_entry_position_iter(padding, entry_dimensions)
+            .map(|p| p.change_y(padding + title_height));
+        let first_entry_y = (entry_dimensions.y() * 0.5) + padding;
+        let mut furthest_entry_y = first_entry_y;
+        for entry in game_list {
+            let position = position_iter.next().unwrap();
+            let entity = self.selector_create_entry_entity(renderer, entry, entry_dimensions);
+
+            self.pile_top_unchecked(pile, entity);
+            self.set_piece_transform_unchecked(entity, position.into());
+
+            furthest_entry_y = position.y();
+        }
+        self.max_selector_scroll = furthest_entry_y - first_entry_y - self.dimensions().y()
+            + padding * 2.0
+            + entry_dimensions.y();
+
+        // create tap again ui piece
+        let tap_again_texture_ir = VisualInfo {
+            components: vec![
+                PatternInfo {
+                    rect: R::from_center_dimension(V::origin(), entry_dimensions).expand(8.0),
+                    pattern: PatternType::Solid,
+                    angle: 0.0,
+                    weight: 0.0,
+                    offset: V::origin(),
+                    spacing: 0.0,
+                    pattern_color: C::try_from_hex_str("90DDDD").unwrap(),
+                    background_color: C::try_from_hex_str("000000").unwrap(),
+                }
+                .into(),
+            ],
+        };
+        let tap_again_texture =
+            match self.create_texture(&PathBuf::new(), None, &tap_again_texture_ir, renderer) {
+                Ok(t) => t,
+                Err(msg) => panic!("Failed to create tap again texture: {msg}"),
+            };
+        let tap_again_piece_ir = PieceIR {
+            name: Some("tap again".into()),
+            texture: "background".into(),
+            transform: V::origin().into(),
+            colliders: Vec::new(),
+            draw_layer: -5,
+            tags: Vec::new(),
+        };
+        let tap_again_piece = match self.create_piece(tap_again_piece_ir) {
+            Ok(p) => p,
+            Err(msg) => panic!("Failed to create tap again piece: {msg}"),
+        };
+        self.piece_textures
+            .insert(tap_again_piece, tap_again_texture);
+        self.hidden_entities.insert(tap_again_piece);
+        self.pile_bottom_unchecked(pile, tap_again_piece);
+    }
+
+    /// handles inputs in selector mode, does nothing if the player is not the host
+    /// returns the path of the selected game, if any
+    fn selector_handle_tap(&mut self, color: PlayerColor) -> Option<PathBuf> {
+        if !self.player_manager.is_visible(color) {
+            return None;
+        }
+
+        let player_pos = self.get_player_position(color).unwrap();
+
+        // the only pieces with hitboxes are entries, and they don't overlap
+        // so if we have a piece, it's an entry
+        if let Some(piece) = self.query_top_piece(player_pos) {
+            // we use the null byte as a sentenial value to mark an entry as selected
+            // null byte is not allowed in paths for any operating system so we have no
+            // chance of accidentally shadowing an entry directory
+            if self.tag_manager.has_tag(piece, &"\0".to_string()) {
+                return Some(
+                    self.tag_manager
+                        .piece_tags(piece)
+                        .filter(|tag| tag.as_str() != "\0")
+                        .next()
+                        .unwrap()
+                        .into(),
+                );
+            }
+
+            let pos = self.entity_transforms.get(piece).unwrap();
+            let tap_again = self
+                .piece_entity_manager
+                .get_by_name(&String::from("tap again"))
+                .unwrap();
+            self.set_piece_transform_unchecked(tap_again, *pos);
+            self.hidden_entities.remove(tap_again);
+
+            // remove null byte marker from previous entry
+            let prev_piece_opt = self.tag_manager.tag_pieces(&"\0".to_string()).next();
+            if let Some(prev_piece) = prev_piece_opt {
+                self.tag_manager
+                    .remove_tags(prev_piece, ["\0".to_string()].iter());
+            }
+
+            // add null byte marker to this entry
+            self.tag_manager.add_tags(piece, ["\0".to_string()].iter());
+        }
+
+        None
+    }
+
+    /// handles a movement event for a player, does nothing if the player does not exist
+    fn selector_handle_move(&mut self, color: PlayerColor, delta: V) {
+        if !self.player_manager.is_visible(color) {
+            return;
+        }
+
+        // handle scrolling
+        let current_position = self.player_manager.get_position(color).unwrap();
+        if current_position.y() >= self.dimensions().y() - 1.0 && delta.y() > 0.0
+            || current_position.y() <= 1.0 && delta.y() < 0.0
+        {
+            let pile = self
+                .piece_entity_manager
+                .get_by_name(&"scroller".into())
+                .unwrap();
+
+            let init_transform = self.entity_transforms.get(pile).unwrap();
+            let init_scroll = -init_transform.position.y();
+            let new_scroll = (init_scroll + delta.y()).clamp(0.0, self.max_selector_scroll);
+
+            if init_scroll != new_scroll {
+                self.set_pile_transform_unchecked(
+                    pile,
+                    RigidTransform {
+                        position: init_transform.position.with_y(-new_scroll),
+                        angle: 0.0,
+                    },
+                );
+            }
+        }
+
+        let _ = self.set_player_position(
+            color,
+            self.lobby_rect.fit_point(current_position.add(delta)),
+        );
+
+        // remove null byte marker from existing entry if necessary
+        let prev_piece_opt = self.tag_manager.tag_pieces(&"\0".to_string()).next();
+        if let Some(prev_piece) = prev_piece_opt {
+            if self.query_top_piece(self.player_manager.get_position(color).unwrap())
+                != Some(prev_piece)
+            {
+                let _ = self.hide(EntityIdentifier::Name("tap again".to_string()));
+                self.tag_manager
+                    .remove_tags(prev_piece, ["\0".to_string()].iter());
+            }
+        }
+    }
+
+    /// handles a "raw" input event
+    /// ignores invalid input events
+    fn selector_handle_input(&mut self, input: PlayerInputEvent) -> Option<PathBuf> {
+        let player = input.player;
+        match input.event {
+            InputEvent::TrackpadDelta { delta_x, delta_y } => {
+                self.selector_handle_move(player, V::from_xy(delta_x, delta_y));
+                None
+            }
+            InputEvent::TrackpadPress => self.selector_handle_tap(player),
+
+            _ => None,
+        }
+    }
+
+    /// handles input events in an iterator
+    pub fn selector_handle_inputs(
+        &mut self,
+        inputs: impl Iterator<Item = PlayerInputEvent>,
+    ) -> Option<PathBuf> {
+        let mut path = None;
+        for input in inputs {
+            let path_opt = self.selector_handle_input(input);
+            if path_opt.is_some() {
+                path = path_opt
+            }
+        }
+        path
+    }
+
+    /// gets an endless iterator over entry positions
+    fn selector_entry_position_iter(padding: f32, entry_dimensions: V) -> impl Iterator<Item = V> {
+        let start = entry_dimensions.scaled(0.5).add((padding, padding));
+        let mut col = 0;
+        let mut cursor = start;
+
+        std::iter::from_fn(move || {
+            if col >= Self::SELECTOR_ENTRY_COLUMNS {
+                cursor = cursor
+                    .with_x(start.x())
+                    .change_y(entry_dimensions.y() + padding);
+                col = 0;
+            }
+            let out = cursor;
+            cursor = cursor.change_x(entry_dimensions.x() + padding);
+            col += 1;
+            Some(out)
+        })
+    }
+
+    /// creates a background texture for selector or lobby mode
+    fn ui_create_background<IR>(&mut self, renderer: &mut IR)
+    where
+        IR: ITextureCompiler<Font = F, Texture = T, Color = C, Rectangle = R, Vector2 = V>,
+    {
+        let board_rect = R::from_position_dimension(V::origin(), self.dimensions());
+
+        let background_ir: VisualInfo<C, R, V> =
+            VisualInfo::from(VisualComponent::from(PatternInfo {
+                rect: board_rect.with_center(V::origin()),
+                pattern: crate::intermediate_representations::PatternType::Checkers,
+                pattern_color: C::try_from_hex_str("E8E8E8").unwrap(),
+                background_color: C::try_from_hex_str("E0E0E0").unwrap(),
+                offset: V::origin(),
+                spacing: 0.0,
+                angle: 45.0,
+                weight: Self::LOBBY_BACKGROUND_WEIGHT * self.dimensions().y(),
+            }));
+        if let Err(msg) = self.create_texture(
+            &PathBuf::new(),
+            Some(String::from("background")),
+            &background_ir,
+            renderer,
+        ) {
+            panic!("Could not load ui background texture: {msg}");
+        }
+        if let Err(msg) = self.create_piece(PieceIR {
+            name: None,
+            texture: String::from("background"),
+            transform: board_rect.center::<V>().into(),
+            colliders: Vec::new(),
+            draw_layer: -10,
+            tags: Vec::new(),
+        }) {
+            panic!("Could not load ui background piece: {msg}");
+        }
+    }
+
+    /// generates an entity for an entry, including a title and thumbnail
+    fn selector_create_entry_entity<IR>(
+        &mut self,
+        renderer: &mut IR,
+        entry: GameEntry<T>,
+        dimensions: V,
+    ) -> PieceEntity
+    where
+        IR: ITextureCompiler<Font = F, Texture = T, Color = C, Rectangle = R, Vector2 = V>,
+    {
+        let rect = R::from_center_dimension(V::origin(), dimensions);
+        let spacing = rect.height() * 0.05;
+        let content_rect = rect.expand(-spacing);
+        let [thumbnail_rect, title_rect] =
+            content_rect.divide_proportions_vertical(&[0.8, 0.2], spacing);
+
+        let mut components = Vec::new();
+        components.push(
+            PatternInfo {
+                rect,
+                pattern: PatternType::Solid,
+                angle: 0.0,
+                weight: 0.0,
+                offset: V::origin(),
+                spacing: 0.0,
+                pattern_color: C::try_from_hex_str("B0B0B0").unwrap(),
+                background_color: C::try_from_hex_str("B0B0B0").unwrap(),
+            }
+            .into(),
+        );
+        components.push(
+            PatternInfo {
+                rect: thumbnail_rect,
+                pattern: PatternType::Solid,
+                angle: 0.0,
+                weight: 0.0,
+                offset: V::origin(),
+                spacing: 0.0,
+                pattern_color: C::try_from_hex_str("000000").unwrap(),
+                background_color: C::try_from_hex_str("000000").unwrap(),
+            }
+            .into(),
+        );
+        if let Some(thumbnail) = entry.thumbnail {
+            self.texture_manager
+                .add_image("thumbnail".to_owned(), thumbnail);
+            components.push(
+                ImageInfo {
+                    position_data: ImagePosition::FitRect(thumbnail_rect),
+                    path: String::from("thumbnail"),
+                    tint: C::try_from_hex_str("ffffff").unwrap(),
+                }
+                .into(),
+            );
+        }
+        components.push(
+            TextboxInfo {
+                rect: title_rect,
+                text: entry.title.clone(),
+                font: String::from("ptserif.ttf"),
+                align: crate::intermediate_representations::TextAlign::CenterCenter,
+                size: None,
+                spacing: None,
+                color: C::try_from_hex_str("000000").unwrap(),
+            }
+            .into(),
+        );
+        let texture_ir = VisualInfo { components };
+        let texture = match self.create_texture(&PathBuf::new(), None, &texture_ir, renderer) {
+            Ok(t) => t,
+            Err(msg) => panic!("Failed to create entry texture: {msg}"),
+        };
+        let piece_ir = PieceIR {
+            name: None,
+            texture: "background".into(),
+            transform: V::origin().into(),
+            colliders: vec![PieceColliderIR {
+                layer: String::from("default"),
+                shape: CollisionShapeIR::Identifier(EntityIdentifier::Name(String::from("entry"))),
+            }],
+            draw_layer: 0,
+            tags: Vec::new(),
+        };
+        match self.create_piece(piece_ir) {
+            Ok(e) => {
+                self.piece_textures.insert(e, texture);
+                self.tag_manager
+                    .add_tags(e, [entry.directory.to_string_lossy().to_string()].iter());
+                e
+            }
+            Err(msg) => panic!("Failed to create piece: {msg}"),
         }
     }
 }
