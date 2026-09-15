@@ -169,7 +169,7 @@ impl<'a> RaylibTextureCompiler<'a> {
                             (0.0, 0.0),
                             (texture.width() as f32, texture.height() as f32).neg_y(),
                         );
-                        let dst_rect = rect.centered_with_aspect_ratio((
+                        let dst_rect = rect.center_with_aspect_ratio((
                             texture.width() as f32,
                             texture.height() as f32,
                         ));
@@ -714,6 +714,7 @@ impl<'a> ITextureCompiler for RaylibTextureCompiler<'a> {
             .rl
             .load_render_texture(&self.thread, width, height)
             .expect("Could not create render texture.");
+        self.rl.draw_texture_mode(&self.thread, &mut texture, |mut p| p.clear_background(Color::BLANK));
 
         let texture_transform = ImageTransform::<Vector2> {
             position: render_offset,
@@ -736,6 +737,7 @@ impl<'a> ITextureCompiler for RaylibTextureCompiler<'a> {
             .rl
             .load_render_texture(&self.thread, mangnified_width, magnified_height)
             .expect("Could not create magnified render texture.");
+        self.rl.draw_texture_mode(&self.thread, &mut texture_magnified, |mut p| p.clear_background(Color::BLANK));
 
         let magnified_transform = ImageTransform::<Vector2> {
             position: render_offset.scale(magnification),
@@ -1342,7 +1344,7 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
         );
         let src_rect =
             Rectangle::from_position_dimension(Vector2::origin(), board.dimensions().neg_y());
-        let dst_rect = render_rect.centered_with_aspect_ratio(board.dimensions());
+        let dst_rect = render_rect.center_with_aspect_ratio(board.dimensions());
 
         self.rl.draw(self.thread, |mut painter| {
             painter.clear_background(Color::BLACK);

@@ -172,8 +172,8 @@ colorButtons.forEach(button => {
 // Reconnection logic
 // -----------------------------------------------------------------------------------------------------------
 
-async function hasSession() {
-    const response = await fetch('/games/has-session', {
+async function isPlayer() {
+    const response = await fetch('/games/is-player', {
         method: "POST",
     });
 
@@ -186,7 +186,7 @@ async function hasSession() {
     return text == "true";
 }
 
-hasSession().then((result) => {
+isPlayer().then((result) => {
     if (result) {
         inputPage.classList.remove("hidden");
     } else {

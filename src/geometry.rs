@@ -22,6 +22,47 @@ macro_rules! impl_as_f32 {
 }
 impl_as_f32!(i8, u8, i16, u16, i32, u32, i64, u64, isize, usize, f32, f64);
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct BasicRect {
+    x: f32,
+    y: f32, 
+    width: f32,
+    height: f32,
+}
+
+impl IRect for BasicRect {
+    fn x(&self) -> f32 {
+        self.x
+    }
+
+    fn y(&self) -> f32 {
+        self.y
+    }
+
+    fn width(&self) -> f32 {
+        self.width
+    }
+
+    fn height(&self) -> f32 {
+        self.height
+    }
+
+    fn from_position_dimension<V1: IVec2, V2: IVec2>(position: V1, dimensions: V2) -> Self {
+        Self {
+            x: position.x(),
+            y: position.y(),
+            width: dimensions.x(),
+            height: dimensions.y(),
+        }
+    }
+}
+
+impl IConvexShape for BasicRect {
+    fn furthest_point<V: IVec2>(&self, direction: V) -> V {
+        IRect::furthest_point(self, direction)
+    }
+}
+
 /// totally orded subset of floating-point numbers
 /// only supporting comparison operations
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
@@ -324,7 +365,7 @@ pub trait IRect: Sized + Clone + Copy + IConvexShape + Debug {
     }
 
     /// creates the rect that fits centered on this one with the given aspect dimensions
-    fn centered_with_aspect_ratio<V: IVec2>(&self, aspect_dimensions: V) -> Self {
+    fn center_with_aspect_ratio<V: IVec2>(&self, aspect_dimensions: V) -> Self {
         let scale_width = self.width() / aspect_dimensions.x();
         let scale_height = self.height() / aspect_dimensions.y();
 
@@ -1257,6 +1298,11 @@ impl<V: IVec2, R: IRect> From<R> for ConvexHull<V> {
 
 impl<V: IVec2> FromLuaTable for ConvexHull<V> {
     fn try_from_lua_table(table: &Table) -> Result<Self, String> {
+        // try to parse as rect
+        if let Ok(rect) = valid_finite_rect_from_lua_table::<BasicRect>(table) {
+            return Ok(Self::from(rect));
+        }
+
         // parse points from lua table
         let mut points = Vec::new();
         for (i, point_opt) in table.sequence_values::<Value>().enumerate() {

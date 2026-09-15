@@ -28,7 +28,7 @@ use crate::{
 pub fn get_font_paths(project_path: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
-    paths.push(project_path.join("fonts"));
+    paths.push(project_path.to_path_buf());
     if let Some(home) = std::env::home_dir() {
         paths.push(home.join(r"AppData\Local\Microsoft\Windows\Fonts"))
     }
@@ -53,10 +53,6 @@ pub fn font_paths(&self) -> PathBuf {
 ///  - Project-local fonts
 pub fn font_paths(&self) -> PathBuf {
     todo!()
-}
-
-pub fn get_image_path(project_path: &Path) -> PathBuf {
-    project_path.join("images")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -935,6 +931,11 @@ impl<V: IVec2> PlayerManager<V> {
         self.held_items.component_iter().cloned()
     }
 
+    /// returns the number of players
+    pub fn len(&self) -> usize {
+        self.players.len()
+    }
+
     /// returns an iterator over players and their positions
     pub fn position_iter(&self) -> impl Iterator<Item = (PlayerColor, V)> {
         self.positions.pairs_iter().map(|(p, t)| (p, *t))
@@ -1116,7 +1117,7 @@ impl<'a, F, I> VisualComponentProvider<'a, F, I> {
         }
 
         let images = unsafe { &mut *self.images };
-        let path_buf = get_image_path(self.project_path).join(path);
+        let path_buf = self.project_path.join(path);
         let image = if let Ok(i) = renderer.load_texture(&path_buf) {
             i
         } else {

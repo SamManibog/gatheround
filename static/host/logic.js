@@ -12,7 +12,7 @@ function applyCooldown(element) {
 document.getElementById("openLobbyButton").addEventListener("click", async (e) => {
     applyCooldown(e.target);
 
-    const response = await fetch('/gamehost/start-lobby', {
+    const response = await fetch('/games/host/start-lobby', {
         method: "POST",
     });
 
@@ -23,7 +23,7 @@ document.getElementById("openLobbyButton").addEventListener("click", async (e) =
 
 document.getElementById("openGameSelectorButton").addEventListener("click", async (e) => {
     applyCooldown(e.target);
-    const response = await fetch('/gamehost/select-game', {
+    const response = await fetch('/games/host/select-game', {
         method: "POST",
     });
 
@@ -32,21 +32,31 @@ document.getElementById("openGameSelectorButton").addEventListener("click", asyn
     }
 })
 
-async function claimHost() {
-    console.log("claiming");
-    const response = await fetch('/gamehost/claim', {
+async function isHost() {
+    const host_response = await fetch('/games/host/is-host', {
         method: "POST",
     });
-    console.log("claimed");
 
-    if (!response.ok) {
-        console.error(`ERROR [${response.status}]: ${await response.text()}`);
+    let host_text = await host_response.text();
+    if (!host_response.ok) {
+        console.error(`ERROR [${host_response.status}]: ${host_text}`);
+    }
+    if (host_text == "true") {
+        return true;
+    }
+
+    const claim_response = await fetch('/games/host/claim', {
+        method: "POST",
+    });
+
+    if (!claim_response.ok) {
+        console.error(`ERROR [${claim_response.status}]: ${await claim_response.text()}`);
         return false;
     }
     return true;
 }
 
-claimHost().then((successful_claim) => {
+isHost().then((successful_claim) => {
     if (successful_claim) {
         body.classList.remove("hidden")
     }

@@ -11,7 +11,8 @@ use crate::{
     input::InputState,
     lua::{FromLuaTable, get_lua_instance},
     platform::{GlobalAssets, IPlatform, IRenderer},
-    server::{GameServer, HostCommand},
+    resources::PlayerColor,
+    server::{GameServer, HostCommand, PlayerEvent},
 };
 
 #[derive(Debug)]
@@ -50,6 +51,8 @@ pub struct AppState<
     F: 'static,
     P: IPlatform<Texture = T, Font = F, Color = C, Rectangle = R, Vector2 = V, ConvexShape = S>,
 > {
+    host_player: Option<PlayerColor>,
+
     board_mode: BoardMode,
     global_assets: GlobalAssets<T, F>,
     board_cell: Rc<RefCell<BoardManager<C, R, V, S, T, F>>>,
@@ -102,6 +105,8 @@ impl<
         let platform_cell = Rc::new(RefCell::new(platform));
 
         Self {
+            host_player: None,
+
             board_mode: BoardMode::Lobby,
             cheat_buffer,
             global_assets,
@@ -185,10 +190,18 @@ impl<
         // reset board
         let mut board = self.board_cell.borrow_mut();
         board.reset();
+        let picking_player = {
+            if let Some(player) = self.host_player {
+                player
+            } else {
+                board.player_iter().next().unwrap_or(PlayerColor::Red)
+            }
+        };
+
         board.game_selector_mode(
             &mut self.platform_cell.borrow_mut().texture_compiler(),
-            crate::resources::PlayerColor::Red,
-            game_entries.into_iter()
+            picking_player,
+            game_entries.into_iter(),
         );
 
         // clear lua state
@@ -206,6 +219,13 @@ impl<
 
     // handle lobby-specific update functionality
     fn update_selector_mode(&mut self) {
+        for player_event in self.server.poll_player_events() {
+            match player_event {
+                PlayerEvent::Joined(_) => (),
+                PlayerEvent::SetHost(player) => self.host_player = Some(player),
+            }
+        }
+
         let path_opt = self
             .board_cell
             .borrow_mut()
@@ -217,9 +237,15 @@ impl<
 
     // handle lobby-specific update functionality
     fn update_lobby_mode(&mut self) {
-        for player in self.server.poll_new_players() {
-            self.board_cell.borrow_mut().lobby_add_player(player);
-            self.input_state.add_player(player);
+        for player_event in self.server.poll_player_events() {
+            match player_event {
+                PlayerEvent::Joined(player) => {
+                    self.board_cell.borrow_mut().lobby_add_player(player);
+                    self.input_state.add_player(player);
+                }
+
+                PlayerEvent::SetHost(player) => self.host_player = Some(player),
+            }
         }
 
         self.board_cell
@@ -229,6 +255,13 @@ impl<
 
     // handle game-specific update functionality
     fn update_game_mode(&mut self) {
+        for player_event in self.server.poll_player_events() {
+            match player_event {
+                PlayerEvent::Joined(_) => (),
+                PlayerEvent::SetHost(player) => self.host_player = Some(player),
+            }
+        }
+
         let (lua, lua_update_callback) = match &mut self.board_mode {
             BoardMode::Game {
                 lua,
@@ -274,7 +307,8 @@ impl<
         for cmd in cmds {
             match cmd {
                 HostCommand::EnterGameSelectionMode => {
-                    if !self.board_mode.is_selector_mode() {
+                    let has_sufficient_players = self.board_cell.borrow_mut().player_count() >= 1;
+                    if !self.board_mode.is_selector_mode() && has_sufficient_players {
                         self.start_game_selector();
                     }
                 }

@@ -7,12 +7,12 @@ use std::{
 use mlua::Lua;
 
 use crate::{
-    game::GameEntry,
     color::IColor,
     ecs::{
         DenseComponentManager, DenseSet, EntityTrait, NamedEntityManager, ResourceManager,
         SparseSet,
     },
+    game::GameEntry,
     geometry::{self, CollisionShape, IConvexShape, IRect, IVec2, NumericF32, RigidTransform},
     input::{InputEvent, PlayerInputEvent},
     intermediate_representations::{
@@ -1917,6 +1917,16 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
         self.piece_entity_manager.entity_iter()
     }
 
+    /// gets an iterator over all players
+    pub fn player_iter(&self) -> impl Iterator<Item = PlayerColor> {
+        self.player_manager.iter()
+    }
+
+    /// gets the number of players
+    pub fn player_count(&self) -> usize {
+        self.player_manager.len()
+    }
+
     /// gets a lua list of all pieces
     pub fn lua_get_pieces(&self, lua: &Lua) -> mlua::Table {
         let table = lua
@@ -2428,6 +2438,9 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
     /// ignores invalid input events
     fn lobby_handle_input(&mut self, input: PlayerInputEvent) {
         let player = input.player;
+        if !self.is_playing(player) {
+            return;
+        }
         match input.event {
             InputEvent::TrackpadDelta { delta_x, delta_y } => {
                 self.lobby_handle_move(player, V::from_xy(delta_x, delta_y))
@@ -2681,10 +2694,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
             }
         }
 
-        let _ = self.set_player_position(
-            color,
-            self.lobby_rect.fit_point(current_position.add(delta)),
-        );
+        let _ = self.set_player_position(color, current_position.add(delta));
 
         // remove null byte marker from existing entry if necessary
         let prev_piece_opt = self.tag_manager.tag_pieces(&"\0".to_string()).next();
@@ -2703,6 +2713,9 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
     /// ignores invalid input events
     fn selector_handle_input(&mut self, input: PlayerInputEvent) -> Option<PathBuf> {
         let player = input.player;
+        if !self.is_playing(player) {
+            return None;
+        }
         match input.event {
             InputEvent::TrackpadDelta { delta_x, delta_y } => {
                 self.selector_handle_move(player, V::from_xy(delta_x, delta_y));
