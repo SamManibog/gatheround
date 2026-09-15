@@ -1,7 +1,14 @@
-use std::{fmt::Debug, path::{Path, PathBuf}};
+use std::{fmt::Debug, path::Path};
 
 use crate::{
-    app::GameEntry, board::BoardManager, cheat_buffer::CheatBuffer, color::IColor, fonts, geometry::{IConvexShape, IRect, IVec2}, intermediate_representations::VisualInfo, lua::FromLuaTable, resources::{TextureInfo, VisualComponentProvider}
+    board::BoardManager,
+    cheat_buffer::CheatBuffer,
+    color::IColor,
+    fonts,
+    geometry::{IConvexShape, IRect, IVec2},
+    intermediate_representations::VisualInfo,
+    lua::FromLuaTable,
+    resources::{TextureInfo, VisualComponentProvider},
 };
 
 #[derive(Debug)]
@@ -171,13 +178,6 @@ pub trait IPlatform: 'static {
 
     /// if the platform requests a close
     fn should_close(&mut self) -> bool;
-
-    /// toggle fullscreen mode
-    fn toggle_fullscreen(&mut self);
-
-    /// handle an update cycle for the game picker
-    /// to start a game, return the directory of the game to start
-    fn run_game_picker(&mut self, games: &[GameEntry<Self::Texture>]) -> Option<PathBuf>;
 
     /// the time between frames
     /// this value shouldn't change

@@ -7,7 +7,7 @@ use std::{
 use mlua::Lua;
 
 use crate::{
-    app::GameEntry,
+    game::GameEntry,
     color::IColor,
     ecs::{
         DenseComponentManager, DenseSet, EntityTrait, NamedEntityManager, ResourceManager,

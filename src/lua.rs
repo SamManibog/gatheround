@@ -1312,13 +1312,6 @@ pub fn get_lua_instance<
         Ok(())
     });
 
-    let platform_cell = platform_cell_clone.clone();
-    create_game_api_function(&lua, "toggle_fullscreen", move |lua, _: ()| {
-        let mut platform = platform_cell.borrow_mut();
-        platform.toggle_fullscreen();
-        Ok(())
-    });
-
     let board_cell = board_cell_clone.clone();
     create_game_api_function(&lua, "get_board_dimensions", move |lua, _: ()| {
         let board = board_cell

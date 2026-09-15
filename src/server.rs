@@ -60,6 +60,18 @@ impl SessionToken {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrivateHostCommand {
+    HostConnected,
+    PublicCommand(HostCommand),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostCommand {
+    EnterGameSelectionMode,
+    EnterLobbyMode,
+}
+
 #[derive(Debug)]
 enum InvalidSessionError {
     DoesNotExist,
@@ -91,6 +103,29 @@ impl Display for NewSessionError {
             Self::SessionAlreadyEstablished => "session exists",
         };
         write!(f, "{}", message)
+    }
+}
+
+#[derive(Debug, Default)]
+struct HostManager {
+    host: Option<SessionToken>,
+}
+
+impl HostManager {
+    pub fn has_host(&self) -> bool {
+        self.host.is_some()
+    }
+
+    pub fn set_host(&mut self, token: SessionToken) {
+        self.host = Some(token);
+    }
+
+    pub fn is_host(&self, token: &SessionToken) -> bool {
+        if let Some(host_token) = &self.host {
+            host_token == token
+        } else {
+            false
+        }
     }
 }
 
@@ -155,7 +190,6 @@ impl SessionManager {
         self.new_player_sender
             .send(color)
             .expect("Could not send new player to main thread.");
-        println!("sending new player");
 
         Ok(token.clone())
     }
@@ -177,11 +211,13 @@ impl SessionManager {
 #[derive(Debug)]
 pub struct ServerState {
     input_sender: Sender<PlayerInputEvent>,
+    host_command_sender: Sender<PrivateHostCommand>,
     sessions: Mutex<SessionManager>,
+    host: Mutex<HostManager>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct DeserializablePlayerJoinRequest {
+struct DeserializablePlayerEntry {
     /// the player's name
     pub color: String,
 }
@@ -190,24 +226,30 @@ struct DeserializablePlayerJoinRequest {
 pub struct GameServer {
     input_receiver: Receiver<PlayerInputEvent>,
     new_player_receiver: Receiver<PlayerColor>,
+    host_command_receiver: Receiver<PrivateHostCommand>,
     kick_player_sender: Sender<PlayerColor>,
+
     service_thread: JoinHandle<Result<(), tokio::io::Error>>,
     allow_joins: Arc<AtomicBool>,
-    host_addr: String,
+    ip_addr: String,
 }
 
 impl GameServer {
-    //pub const HOST_ADDR: &str = "192.168.137.1:443";
-    pub const HOST_ADDR: &str = "127.0.0.1:8080";
+    pub const HOST_PATH: &str = "/gamehost";
+    pub const CLAIM_HOST_PATH: &str = "/gamehost/claim";
+    pub const HOST_LOBBY_PATH: &str = "/gamehost/start-lobby";
+    pub const HOST_GAME_SELECTION_PATH: &str = "/gamehost/select-game";
 
-    pub const MAIN_PATH: &str = "/games";
+    pub const CONTROLLER_PATH: &str = "/games";
     pub const INPUT_API_PATH: &str = "/games/input";
     pub const PLAYER_ASSIGNMENT_API_PATH: &str = "/games/get-session";
     pub const HAS_SESSION_API_PATH: &str = "/games/has-session";
 
-    pub const STATIC_FILES_PATH: &str = "./static";
+    pub const STATIC_CONTROLLER_FILES_PATH: &str = "./static/controller";
+    pub const STATIC_HOST_FILES_PATH: &str = "./static/host";
 
     pub const SESSION_COOKIE_NAME: &str = "session_id";
+    pub const HOST_COOKIE_NAME: &str = "host_id";
 
     pub const COOKIE_LIFETIME: Duration = Duration::days(7);
 
@@ -235,12 +277,22 @@ impl GameServer {
     ) -> (StatusCode, String) {
         let token_string = match jar.get(Self::SESSION_COOKIE_NAME) {
             Some(cookie) => cookie,
-            None => return (StatusCode::UNAUTHORIZED, "Missing session_id".to_owned()),
+            None => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    format!("Missing {}", Self::SESSION_COOKIE_NAME),
+                );
+            }
         }
         .value_trimmed();
         let token = match SessionToken::from_str(token_string) {
             Some(token) => token,
-            None => return (StatusCode::UNAUTHORIZED, "Invalid session_id".to_owned()),
+            None => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    format!("Invalid {}", Self::SESSION_COOKIE_NAME),
+                );
+            }
         };
 
         let mut sessions_lock = match state.sessions.lock() {
@@ -250,7 +302,10 @@ impl GameServer {
         let player = match sessions_lock.session_player_color(&token) {
             Ok(player) => player,
             Err(InvalidSessionError::DoesNotExist) => {
-                return (StatusCode::UNAUTHORIZED, "Expired session_id".to_owned());
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    format!("Expired {}", Self::SESSION_COOKIE_NAME),
+                );
             }
         };
         match <InputEvent as TryFrom<&DeserializableInputEvent>>::try_from(&playload) {
@@ -266,10 +321,113 @@ impl GameServer {
         }
     }
 
+    async fn claim_host_handler(
+        State(state): State<Arc<ServerState>>,
+        jar: CookieJar,
+    ) -> (StatusCode, CookieJar, String) {
+        println!("hosting");
+        let mut host_lock = state.host.lock().expect("Unable to lock host manager.");
+        if host_lock.has_host() {
+            return (
+                StatusCode::FORBIDDEN,
+                jar,
+                format!("game host already exists"),
+            );
+        }
+
+        let token = SessionToken::new();
+        host_lock.set_host(token.clone());
+
+        let mut host_cookie = Cookie::new(Self::HOST_COOKIE_NAME, token.to_url_string());
+        host_cookie.set_same_site(SameSite::Strict);
+        host_cookie.set_path(Self::HOST_PATH);
+        host_cookie.set_http_only(true);
+        host_cookie.set_secure(true);
+        host_cookie.set_max_age(Self::COOKIE_LIFETIME);
+        let updated_jar = jar.add(host_cookie);
+
+        println!("Host connected.");
+
+        state
+            .host_command_sender
+            .send(PrivateHostCommand::HostConnected)
+            .expect("Unable to send host connection signal.");
+
+        (
+            StatusCode::ACCEPTED,
+            updated_jar,
+            format!("you are the host"),
+        )
+    }
+
+    fn validate_host(jar: &CookieJar, host: &mut HostManager) -> Result<(), (StatusCode, String)> {
+        let token_string = match jar.get(Self::HOST_COOKIE_NAME) {
+            Some(cookie) => cookie,
+            None => {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    format!("Missing {}", Self::HOST_COOKIE_NAME),
+                ));
+            }
+        }
+        .value_trimmed();
+        let token = match SessionToken::from_str(token_string) {
+            Some(token) => token,
+            None => {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    format!("Invalid {}", Self::HOST_COOKIE_NAME),
+                ));
+            }
+        };
+
+        if !host.is_host(&token) {
+            return Err((StatusCode::FORBIDDEN, format!("Not the host")));
+        }
+
+        Ok(())
+    }
+
+    async fn lobby_mode_handler(
+        State(state): State<Arc<ServerState>>,
+        jar: CookieJar,
+    ) -> (StatusCode, String) {
+        if let Err(err) = Self::validate_host(&jar, &mut state.host.lock().unwrap()) {
+            return err;
+        }
+
+        state
+            .host_command_sender
+            .send(PrivateHostCommand::PublicCommand(
+                HostCommand::EnterLobbyMode,
+            ))
+            .expect("Could not send host command to main thread.");
+
+        (StatusCode::ACCEPTED, format!("Entering lobby mode"))
+    }
+
+    async fn game_selector_mode_handler(
+        State(state): State<Arc<ServerState>>,
+        jar: CookieJar,
+    ) -> (StatusCode, String) {
+        if let Err(err) = Self::validate_host(&jar, &mut state.host.lock().unwrap()) {
+            return err;
+        }
+
+        state
+            .host_command_sender
+            .send(PrivateHostCommand::PublicCommand(
+                HostCommand::EnterGameSelectionMode,
+            ))
+            .expect("Could not send host command to main thread.");
+
+        (StatusCode::ACCEPTED, format!("Entering game selector mode"))
+    }
+
     async fn player_assignment_handler(
         State(state): State<Arc<ServerState>>,
         jar: CookieJar,
-        Json(payload): Json<DeserializablePlayerJoinRequest>,
+        Json(payload): Json<DeserializablePlayerEntry>,
     ) -> (StatusCode, CookieJar, String) {
         let requested_color = match PlayerColor::try_from(&payload.color) {
             Ok(request) => request,
@@ -302,7 +460,7 @@ impl GameServer {
 
         let mut session_cookie = Cookie::new(Self::SESSION_COOKIE_NAME, token.to_url_string());
         session_cookie.set_same_site(SameSite::Strict);
-        session_cookie.set_path(Self::MAIN_PATH);
+        session_cookie.set_path(Self::CONTROLLER_PATH);
         session_cookie.set_http_only(true);
         session_cookie.set_secure(true);
         session_cookie.set_max_age(Self::COOKIE_LIFETIME);
@@ -316,16 +474,20 @@ impl GameServer {
     }
 
     /// creates and runs a new input server
+    /// function does not return until a host has connected
     pub async fn run_new(address: String) -> Self {
         let host_addr: String = address;
 
         let (input_sender, input_receiver) = mpsc::channel();
         let (new_player_sender, new_player_receiver) = mpsc::channel();
+        let (host_command_sender, host_command_receiver) = mpsc::channel();
         let (kick_player_sender, kick_player_receiver) = mpsc::channel();
-        let allow_joins = Arc::new(AtomicBool::new(true));
+        let allow_joins = Arc::new(AtomicBool::new(false));
 
         let state = ServerState {
             input_sender,
+            host: Mutex::new(HostManager::default()),
+            host_command_sender,
             sessions: Mutex::new(SessionManager::new(
                 new_player_sender,
                 kick_player_receiver,
@@ -334,12 +496,19 @@ impl GameServer {
         };
 
         let app = Router::new()
+            .nest_service(Self::HOST_PATH, ServeDir::new(Self::STATIC_HOST_FILES_PATH))
             .nest_service(
-                Self::MAIN_PATH,
-                ServeDir::new(Self::STATIC_FILES_PATH),
+                Self::CONTROLLER_PATH,
+                ServeDir::new(Self::STATIC_CONTROLLER_FILES_PATH),
             )
             .route(Self::INPUT_API_PATH, post(Self::input_handler))
             .route(Self::HAS_SESSION_API_PATH, post(Self::has_session_handler))
+            .route(
+                Self::HOST_GAME_SELECTION_PATH,
+                post(Self::game_selector_mode_handler),
+            )
+            .route(Self::HOST_LOBBY_PATH, post(Self::lobby_mode_handler))
+            .route(Self::CLAIM_HOST_PATH, post(Self::claim_host_handler))
             .route(
                 Self::PLAYER_ASSIGNMENT_API_PATH,
                 post(Self::player_assignment_handler),
@@ -352,11 +521,19 @@ impl GameServer {
         let service_thread = tokio::spawn(async move { axum::serve(listener, app).await });
         println!("Server started at {host_addr}.");
 
+        println!("Awaiting host connection at {host_addr}{}", Self::HOST_PATH);
+        for cmd in host_command_receiver.iter() {
+            if cmd == PrivateHostCommand::HostConnected {
+                break;
+            }
+        }
+
         Self {
-            host_addr,
+            ip_addr: host_addr,
             allow_joins,
             input_receiver,
             new_player_receiver,
+            host_command_receiver,
             kick_player_sender,
             service_thread,
         }
@@ -364,7 +541,7 @@ impl GameServer {
 
     /// gets the address of the server
     pub fn address(&self) -> &str {
-        &self.host_addr
+        &self.ip_addr
     }
 
     /// blocks new players from joining
@@ -391,6 +568,15 @@ impl GameServer {
 
     pub fn poll_new_players(&self) -> impl Iterator<Item = PlayerColor> {
         self.new_player_receiver.try_iter()
+    }
+
+    pub fn poll_host_commands(&self) -> impl Iterator<Item = HostCommand> {
+        self.host_command_receiver
+            .try_iter()
+            .filter_map(|cmd| match cmd {
+                PrivateHostCommand::PublicCommand(cmd) => Some(cmd),
+                _ => None,
+            })
     }
 
     pub fn abort(self) {

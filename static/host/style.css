@@ -1,0 +1,33 @@
+:root {
+    color-scheme: light dark;
+
+    --player-red: #f16060ff;
+    --player-orange: #f38e41ff;
+    --player-yellow: #eec850ff;
+    --player-green: #53b976ff;
+    --player-blue: #63abecff;
+    --player-purple: #bd6dd7ff;
+    --player-pink: #fb9debff;
+    --player-lime: #b8e36cff;
+    --player-cyan: #7ee3e3ff;
+    --player-black: #4b5060ff;
+    --player-white: #fff7eeff;
+    --player-brown: #a86b55ff;
+}
+
+* {
+  -webkit-touch-callout: none; /* iOS Safari */
+  -webkit-user-select: none;   /* Safari */
+  -khtml-user-select: none;     /* Konqueror HTML */
+  -moz-user-select: none;      /* Old versions of Firefox */
+  -ms-user-select: none;       /* Internet Explorer/Edge */
+  user-select: none
+}
+
+html, body {
+    background-color: Canvas;
+}
+
+.hidden {
+    display: none;
+}

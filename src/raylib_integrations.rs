@@ -1425,11 +1425,6 @@ impl IPlatform for RaylibPlatform {
         self.rl.window_should_close()
     }
 
-    fn toggle_fullscreen(&mut self) {
-        self.rl.toggle_fullscreen();
-        self.rl.set_window_position(100, 100);
-    }
-
     fn delta_time(&mut self) -> f32 {
         1.0 / TARGET_FRAME_RATE as f32
     }
@@ -1453,60 +1448,5 @@ impl IPlatform for RaylibPlatform {
 
     fn keyboard_reader(&mut self) -> Self::KeyboardReader<'_> {
         RaylibKeyboardReader { rl: &mut self.rl }
-    }
-
-    fn run_game_picker(
-        &mut self,
-        games: &[crate::app::GameEntry<Self::Texture>],
-    ) -> Option<std::path::PathBuf> {
-        if games.is_empty() {
-            // placeholder, delete later
-            self.rl.draw(&self.thread, |mut p| {
-                p.draw_text("No games to play!", 40, 40, 32, Color::BLACK);
-            });
-
-            return None;
-        }
-
-        /// game entries to draw per row
-        const ENTRIES_PER_ROW: u32 = 3;
-
-        /// aspect ratio of entries
-        const ENTRY_ASPECT_RATIO: f32 = 4.0 / 3.0;
-
-        /// padding between entries as proportion of screen width
-        const PADDING_RATIO: f32 = 0.05;
-
-        let max_entries_per_col = games.len().div_ceil(ENTRIES_PER_ROW as usize);
-        let padding = self.rl.get_render_width() as f32 * PADDING_RATIO;
-        let entry_width = (self.rl.get_render_width() as f32
-            - PADDING_RATIO * (ENTRIES_PER_ROW + 1) as f32)
-            / ENTRIES_PER_ROW as f32;
-        let entry_dimensions = Vector2 {
-            x: entry_width,
-            y: entry_width / ENTRY_ASPECT_RATIO,
-        };
-        let entry_rect = Rectangle {
-            x: padding,
-            y: padding,
-            width: (entry_dimensions.x + padding) * ENTRIES_PER_ROW as f32,
-            height: (entry_dimensions.y + padding) * max_entries_per_col as f32,
-        };
-
-        let entry_rect_iter = entry_rect
-            .evenly_spaced_rects(entry_dimensions.add(Vector2::from_xy(padding, padding)))
-            .map(|r| {
-                r.with_width(entry_dimensions.x)
-                    .with_height(entry_dimensions.y)
-            });
-
-        if self.rl.is_key_released(KeyboardKey::KEY_F11) {
-            self.rl.toggle_fullscreen();
-            self.rl.set_window_position(100, 100);
-        }
-
-        for entry_rect in entry_rect_iter {}
-
-        todo!()
     }
 }

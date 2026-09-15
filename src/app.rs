@@ -1,9 +1,4 @@
-use std::{
-    cell::RefCell,
-    fmt::Debug,
-    path::{Path, PathBuf},
-    rc::Rc,
-};
+use std::{cell::RefCell, fmt::Debug, path::PathBuf, rc::Rc};
 
 use mlua::{Lua, MultiValue};
 
@@ -11,28 +6,38 @@ use crate::{
     board::BoardManager,
     cheat_buffer::CheatBuffer,
     color::IColor,
+    game::{self},
     geometry::{IConvexShape, IRect, IVec2},
     input::InputState,
     lua::{FromLuaTable, get_lua_instance},
-    platform::{GlobalAssets, IPlatform, IRenderer, ITextureCompiler},
-    server::GameServer,
+    platform::{GlobalAssets, IPlatform, IRenderer},
+    server::{GameServer, HostCommand},
 };
 
-#[derive(Debug, Clone)]
-pub struct GameEntry<T> {
-    pub title: String,
-    pub directory: PathBuf,
-    pub thumbnail: Option<T>,
-}
-
 #[derive(Debug)]
-enum BoardState {
+enum BoardMode {
     Game {
         lua: Lua,
         update_callback: mlua::Function,
     },
     Lobby,
     GameSelector,
+}
+
+impl BoardMode {
+    pub fn is_lobby_mode(&self) -> bool {
+        match self {
+            Self::Lobby => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_selector_mode(&self) -> bool {
+        match self {
+            Self::GameSelector => true,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -45,22 +50,22 @@ pub struct AppState<
     F: 'static,
     P: IPlatform<Texture = T, Font = F, Color = C, Rectangle = R, Vector2 = V, ConvexShape = S>,
 > {
-    board_state: BoardState,
+    board_mode: BoardMode,
     global_assets: GlobalAssets<T, F>,
     board_cell: Rc<RefCell<BoardManager<C, R, V, S, T, F>>>,
     cheat_buffer: CheatBuffer,
     platform_cell: Rc<RefCell<P>>,
     server: GameServer,
     input_state: InputState,
-    game_dir: PathBuf,
-    host_address: String,
+    settings: GameSettings<V>,
 }
 
-// the name of the lua file to load when initializing lua state
-pub const MAIN_LUA_FILE: &str = "main.lua";
-
-// the name of the thumbnail
-pub const THUMBNAIL_FILE: &str = "thumbnail.png";
+#[derive(Debug, Clone)]
+pub struct GameSettings<V: IVec2> {
+    pub games_directory: PathBuf,
+    pub ip_address: String,
+    pub dimensions: V,
+}
 
 impl<
     C: IColor + 'static,
@@ -72,12 +77,16 @@ impl<
     P: IPlatform<Texture = T, Font = F, Color = C, Rectangle = R, Vector2 = V, ConvexShape = S>,
 > AppState<C, R, V, S, T, F, P>
 {
-    pub async fn new_with_settings(
-        project_path: PathBuf,
-        host_address: String,
-        dimensions: V,
-        mut platform: P,
+    pub async fn new_with_settings<G: FnOnce(&GameSettings<V>) -> P>(
+        settings: GameSettings<V>,
+        platform_generator: G,
     ) -> Self {
+        // initialize server
+        let server = GameServer::run_new(settings.ip_address.to_string()).await;
+
+        // initialize platform
+        let mut platform = platform_generator(&settings);
+
         // initialize input state
         let input_state = InputState::default();
 
@@ -85,43 +94,22 @@ impl<
         let global_assets = GlobalAssets::new(&mut platform.texture_compiler());
 
         // initialize board
-        let mut board = BoardManager::new(dimensions);
-        board.add_player(crate::resources::PlayerColor::Red);
-        let entries = 
-            Self::get_game_entries(&PathBuf::from(""), platform.texture_compiler());
-        board.game_selector_mode(
-            &mut platform.texture_compiler(),
-            crate::resources::PlayerColor::Red,
-            entries.into_iter(),
-        );
-        println!("board initialized in selector mode, remove this behavior");
-        /*
-                board.lobby_mode(
-                    &mut platform.texture_compiler(),
-                    &format!("{host_address}{}", GameServer::MAIN_PATH),
-                );
-        */
-        let board_cell = Rc::new(RefCell::new(board));
+        let board_cell = Rc::new(RefCell::new(BoardManager::new(settings.dimensions)));
 
         // initialize cheat buffer
         let cheat_buffer = CheatBuffer::new();
 
         let platform_cell = Rc::new(RefCell::new(platform));
 
-        // initialize server
-        let server = GameServer::run_new(host_address.to_string()).await;
-
-        println!("app made in selector mode");
         Self {
-            board_state: BoardState::GameSelector,
+            board_mode: BoardMode::Lobby,
             cheat_buffer,
             global_assets,
             board_cell,
             platform_cell,
             server,
             input_state,
-            host_address,
-            game_dir: project_path,
+            settings,
         }
     }
 
@@ -132,7 +120,7 @@ impl<
 
         // load lua state for the game
         let lua: Lua = get_lua_instance(&project_path, &self.board_cell, &self.platform_cell);
-        let main_path = project_path.join(MAIN_LUA_FILE);
+        let main_path = project_path.join(game::MAIN_LUA_FILE);
         let script_content = std::fs::read_to_string(&main_path)
             .expect(&format!("Unable to read lua file '{:#?}'.", &main_path));
         let main_chunk = lua.load(script_content);
@@ -146,7 +134,7 @@ impl<
             ),
         };
 
-        self.board_state = BoardState::Game {
+        self.board_mode = BoardMode::Game {
             lua,
             update_callback,
         };
@@ -166,11 +154,15 @@ impl<
         board.reset();
         board.lobby_mode(
             &mut self.platform_cell.borrow_mut().texture_compiler(),
-            &format!("{}{}", self.host_address, GameServer::MAIN_PATH),
+            &format!(
+                "{}{}",
+                self.settings.ip_address,
+                GameServer::CONTROLLER_PATH
+            ),
         );
 
         // clear lua state
-        self.board_state = BoardState::Lobby;
+        self.board_mode = BoardMode::Lobby;
 
         // clear cheat buffer
         self.cheat_buffer.clear();
@@ -182,93 +174,31 @@ impl<
         for _ in self.server.poll_inputs() {}
     }
 
-    // gets a list of game entries
-    fn get_game_entries(
-        game_dir: &Path,
-        mut texture_compiler: P::TextureCompiler<'_>,
-    ) -> Vec<GameEntry<P::Texture>> {
-        vec![
-            GameEntry {
-                title: String::from("1"),
-                directory: PathBuf::from("1"),
-                thumbnail: Some(
-                    texture_compiler
-                        .load_texture_from_memory(".png", crate::platform::OPEN_HAND_BYTES)
-                        .unwrap(),
-                ),
-            },
-            GameEntry {
-                title: String::from("2"),
-                directory: PathBuf::from("2"),
-                thumbnail: None,
-            },
-            GameEntry {
-                title: String::from("3"),
-                directory: PathBuf::from("3"),
-                thumbnail: None,
-            },
-            GameEntry {
-                title: String::from("4"),
-                directory: PathBuf::from("4"),
-                thumbnail: None,
-            },
-            GameEntry {
-                title: String::from("5"),
-                directory: PathBuf::from("5"),
-                thumbnail: None,
-            },
-            GameEntry {
-                title: String::from("6"),
-                directory: PathBuf::from("6"),
-                thumbnail: None,
-            },
-            GameEntry {
-                title: String::from("7"),
-                directory: PathBuf::from("7"),
-                thumbnail: None,
-            },
-            GameEntry {
-                title: String::from("8"),
-                directory: PathBuf::from("8"),
-                thumbnail: None,
-            },
-            GameEntry {
-                title: String::from("9"),
-                directory: PathBuf::from("9"),
-                thumbnail: None,
-            },
-            GameEntry {
-                title: String::from("10"),
-                directory: PathBuf::from("10"),
-                thumbnail: None,
-            },
-        ]
-    }
-
     // enters game selector mode
     pub fn start_game_selector(&mut self) {
+        // load entries
+        let game_entries = game::load_game_entries(
+            &self.settings.games_directory,
+            &mut self.platform_cell.borrow_mut().texture_compiler(),
+        );
+
         // reset board
         let mut board = self.board_cell.borrow_mut();
         board.reset();
         board.game_selector_mode(
             &mut self.platform_cell.borrow_mut().texture_compiler(),
             crate::resources::PlayerColor::Red,
-            Self::get_game_entries(
-                &self.game_dir,
-                self.platform_cell.borrow_mut().texture_compiler(),
-            )
-            .into_iter(),
+            game_entries.into_iter()
         );
 
         // clear lua state
-        self.board_state = BoardState::GameSelector;
+        self.board_mode = BoardMode::GameSelector;
 
         // clear cheat buffer
         self.cheat_buffer.clear();
 
         // block new players from joining
-        //self.server.block_new_players();
-        println!("new players not blocked, change this behavior");
+        self.server.block_new_players();
 
         // discard old input events
         for _ in self.server.poll_inputs() {}
@@ -276,12 +206,12 @@ impl<
 
     // handle lobby-specific update functionality
     fn update_selector_mode(&mut self) {
-        if let Some(path) = self
+        let path_opt = self
             .board_cell
             .borrow_mut()
-            .selector_handle_inputs(self.server.poll_inputs())
-        {
-            println!("Game Path: {} selected!", path.to_string_lossy());
+            .selector_handle_inputs(self.server.poll_inputs());
+        if let Some(path) = path_opt {
+            self.start_game(path);
         }
     }
 
@@ -299,8 +229,8 @@ impl<
 
     // handle game-specific update functionality
     fn update_game_mode(&mut self) {
-        let (lua, lua_update_callback) = match &mut self.board_state {
-            BoardState::Game {
+        let (lua, lua_update_callback) = match &mut self.board_mode {
+            BoardMode::Game {
                 lua,
                 update_callback,
             } => (lua, update_callback),
@@ -339,10 +269,27 @@ impl<
             return false;
         }
 
-        match self.board_state {
-            BoardState::Game { .. } => self.update_game_mode(),
-            BoardState::Lobby => self.update_lobby_mode(),
-            BoardState::GameSelector => self.update_selector_mode(),
+        // poll for host commands
+        let cmds: Vec<HostCommand> = self.server.poll_host_commands().collect();
+        for cmd in cmds {
+            match cmd {
+                HostCommand::EnterGameSelectionMode => {
+                    if !self.board_mode.is_selector_mode() {
+                        self.start_game_selector();
+                    }
+                }
+                HostCommand::EnterLobbyMode => {
+                    if !self.board_mode.is_lobby_mode() {
+                        self.start_lobby();
+                    }
+                }
+            }
+        }
+
+        match self.board_mode {
+            BoardMode::Game { .. } => self.update_game_mode(),
+            BoardMode::Lobby => self.update_lobby_mode(),
+            BoardMode::GameSelector => self.update_selector_mode(),
         }
 
         // run draw cycle
@@ -358,6 +305,8 @@ impl<
 
     /// runs the app
     pub fn run(&mut self) {
+        self.start_lobby();
+
         while self.update() {}
     }
 }
