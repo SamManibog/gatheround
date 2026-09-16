@@ -9,9 +9,9 @@ use mlua::{Lua, LuaOptions, StdLib, Table, Value};
 
 use crate::{
     board::BoardManager,
-    color::{IColor, color_from_lua_value},
-    ecs::EntityTrait,
-    geometry::{
+    utils::color::{IColor, color_from_lua_value},
+    utils::ecs::EntityTrait,
+    utils::geometry::{
         IConvexShape, IRect, IVec2, RigidTransform, finite_vec2_from_lua_table,
         finite_vec2_from_lua_value,
     },

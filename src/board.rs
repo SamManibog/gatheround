@@ -7,13 +7,13 @@ use std::{
 use mlua::Lua;
 
 use crate::{
-    color::IColor,
-    ecs::{
+    utils::color::IColor,
+    utils::ecs::{
         DenseComponentManager, DenseSet, EntityTrait, NamedEntityManager, ResourceManager,
         SparseSet,
     },
     game::GameEntry,
-    geometry::{self, CollisionShape, IConvexShape, IRect, IVec2, NumericF32, RigidTransform},
+    utils::geometry::{self, CollisionShape, IConvexShape, IRect, IVec2, NumericF32, RigidTransform},
     input::{InputEvent, PlayerInputEvent},
     intermediate_representations::{
         CollisionShapeIR, EntityIdentifier, ImageInfo, ImagePosition, PatternInfo, PatternType,

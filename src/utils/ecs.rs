@@ -3,10 +3,9 @@ use std::{
     fmt::Debug,
     hash::Hash,
     marker::PhantomData,
-    u32,
 };
 
-use crate::{bitvec::BitSet, lua::FromLuaValue};
+use crate::{lua::FromLuaValue, utils::bitvec::BitSet};
 
 pub trait EntityTrait:
     Debug

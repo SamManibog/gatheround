@@ -3,9 +3,9 @@ use std::fmt::Debug;
 use mlua::{Table, Value};
 
 use crate::{
-    color::{IColor, color_from_lua_value},
-    ecs::EntityTrait,
-    geometry::{
+    utils::color::{IColor, color_from_lua_value},
+    utils::ecs::EntityTrait,
+    utils::geometry::{
         CollisionShape, IConvexShape, IRect, IVec2, RigidTransform, finite_vec2_from_lua_table,
         finite_vec2_from_lua_value, valid_finite_rect_from_lua_table,
     },

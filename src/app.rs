@@ -5,14 +5,14 @@ use mlua::{Lua, MultiValue};
 use crate::{
     board::BoardManager,
     cheat_buffer::CheatBuffer,
-    color::IColor,
     game::{self},
-    geometry::{IConvexShape, IRect, IVec2},
     input::InputState,
     lua::{FromLuaTable, get_lua_instance},
     platform::{GlobalAssets, IPlatform, IRenderer},
     resources::PlayerColor,
     server::{GameServer, HostCommand, PlayerEvent},
+    utils::color::IColor,
+    utils::geometry::{IConvexShape, IRect, IVec2},
 };
 
 #[derive(Debug)]

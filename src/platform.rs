@@ -1,7 +1,14 @@
 use std::{fmt::Debug, path::Path};
 
 use crate::{
-    assets, board::BoardManager, cheat_buffer::CheatBuffer, color::IColor, geometry::{IConvexShape, IRect, IVec2}, intermediate_representations::VisualInfo, lua::FromLuaTable, resources::{TextureInfo, VisualComponentProvider}
+    assets,
+    board::BoardManager,
+    cheat_buffer::CheatBuffer,
+    utils::color::IColor,
+    utils::geometry::{IConvexShape, IRect, IVec2},
+    intermediate_representations::VisualInfo,
+    lua::FromLuaTable,
+    resources::{TextureInfo, VisualComponentProvider},
 };
 
 #[derive(Debug)]
@@ -15,11 +22,14 @@ impl<T: 'static, F: 'static> GlobalAssets<T, F> {
     pub const CHEAT_BUFFER_FONT_SIZE: f32 = 28.0;
 
     pub fn new<R: ITextureCompiler<Texture = T, Font = F>>(compiler: &mut R) -> Self {
-        let open_hand_texture = match compiler.load_texture_from_memory(assets::OPEN_HAND.filetype, assets::OPEN_HAND.data) {
+        let open_hand_texture = match compiler
+            .load_texture_from_memory(assets::OPEN_HAND.filetype, assets::OPEN_HAND.data)
+        {
             Ok(t) => t,
             Err(msg) => panic!("Unable to load open hand texture: {msg}"),
         };
-        let closed_hand_texture = match compiler.load_texture_from_memory(assets::CLOSED_HAND.filetype, assets::CLOSED_HAND.data)
+        let closed_hand_texture = match compiler
+            .load_texture_from_memory(assets::CLOSED_HAND.filetype, assets::CLOSED_HAND.data)
         {
             Ok(t) => t,
             Err(msg) => panic!("Unable to load open hand texture: {msg}"),

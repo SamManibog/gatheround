@@ -11,7 +11,14 @@ use roaring::RoaringBitmap;
 use serde::Serialize;
 
 use crate::{
-    assets::{self, BuiltinFontData}, color::IColor, ecs::{DenseComponentManager, DenseSet, Entity, EntityTrait, ResourceManager}, geometry::{IRect, IVec2}, intermediate_representations::VisualInfo, lua::FromLuaValue, platform::ITextureCompiler, quadtree::QuadTree
+    assets::{self, BuiltinFontData},
+    utils::color::IColor,
+    utils::ecs::{DenseComponentManager, DenseSet, Entity, EntityTrait, ResourceManager},
+    utils::geometry::{IRect, IVec2},
+    intermediate_representations::VisualInfo,
+    lua::FromLuaValue,
+    platform::ITextureCompiler,
+    quadtree::QuadTree,
 };
 
 #[cfg(target_os = "windows")]
@@ -1372,14 +1379,17 @@ impl<T, F> Default for TextureManager<T, F> {
 }
 
 impl<T, F> TextureManager<T, F> {
-
     /// adds a new image, overwritting it if it already exists
     pub fn add_image(&mut self, name: String, image: T) {
         self.images.insert(name, image);
     }
 
     /// adds a new texture
-    pub fn add_texture(&mut self, name: Option<String>, texture: TextureInfo<T>) -> Result<TextureEntity, String> {
+    pub fn add_texture(
+        &mut self,
+        name: Option<String>,
+        texture: TextureInfo<T>,
+    ) -> Result<TextureEntity, String> {
         if let Some(n) = name {
             if let Ok(entity) = self.textures.add_named(n.clone(), texture) {
                 Ok(entity)

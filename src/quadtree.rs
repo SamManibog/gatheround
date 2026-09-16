@@ -1,7 +1,7 @@
 // TODO
 // change recursive methods into queue/stack-based methods
 
-use crate::geometry::{IRect, IVec2};
+use crate::utils::geometry::{IRect, IVec2};
 
 enum QuadTreeRegion {
     NE,

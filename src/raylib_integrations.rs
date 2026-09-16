@@ -11,8 +11,8 @@ use raylib::{
 use crate::{
     board::BoardManager,
     cheat_buffer::CheatBuffer,
-    color::IColor,
-    geometry::{ConvexHull, IConvexShape, IRect, IVec2},
+    utils::color::IColor,
+    utils::geometry::{ConvexHull, IConvexShape, IRect, IVec2},
     intermediate_representations::{
         Alignment, ImagePosition, ImageTransform, PatternInfo, PatternType, TextboxInfo,
         VisualComponent, VisualInfo,
