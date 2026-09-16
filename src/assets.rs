@@ -11,19 +11,19 @@ pub struct BuiltinFontData {
 pub const JETBRAINS_MONO: BuiltinFontData = BuiltinFontData {
     name: "jetbrains-mono.ttf",
     filetype: ".ttf",
-    data: include_bytes!("jetbrains-mono.ttf"),
+    data: include_bytes!("assets/jetbrains-mono.ttf"),
 };
 
 pub const PT_SERIF_REGULAR: BuiltinFontData = BuiltinFontData {
     name: "ptserif.ttf",
     filetype: ".ttf",
-    data: include_bytes!("ptserif.ttf"),
+    data: include_bytes!("assets/ptserif.ttf"),
 };
 
 pub const PT_SERIF_BOLD: BuiltinFontData = BuiltinFontData {
     name: "ptserif-bold.ttf",
     filetype: ".ttf",
-    data: include_bytes!("ptserif-bold.ttf"),
+    data: include_bytes!("assets/ptserif-bold.ttf"),
 };
 
 impl BuiltinFontData {
@@ -37,3 +37,22 @@ impl BuiltinFontData {
         }
     }
 }
+
+#[derive(Debug)]
+pub struct BuiltinImageData {
+    pub name: &'static str,
+    pub filetype: &'static str,
+    pub data: &'static [u8],
+}
+
+pub const OPEN_HAND: BuiltinImageData = BuiltinImageData {
+    name: "open_hand.png",
+    filetype: ".png",
+    data: include_bytes!("assets/open_hand.png"),
+};
+
+pub const CLOSED_HAND: BuiltinImageData = BuiltinImageData {
+    name: "closed_hand.png",
+    filetype: ".png",
+    data: include_bytes!("assets/closed_hand.png"),
+};

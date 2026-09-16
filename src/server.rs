@@ -3,7 +3,6 @@ use std::{
     fmt::Display,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender},
     },
 };
@@ -15,9 +14,9 @@ use axum_extra::extract::{
 };
 use base64::Engine;
 use rand::Rng;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use time::Duration;
-use tokio::{self, task::JoinHandle};
+use tokio::{self, sync::oneshot, task::JoinHandle};
 use tower_http::services::ServeDir;
 
 use crate::{
@@ -113,76 +112,251 @@ impl Display for NewSessionError {
 }
 
 #[derive(Debug)]
+struct SessionState {
+    color: Option<PlayerColor>,
+    update_state: SessionUpdateState,
+}
+
+#[derive(Debug)]
+struct SessionUpdateState {
+    update_request_opt: Option<oneshot::Sender<(StatusCode, String)>>,
+    needs_update: bool,
+}
+
+impl SessionUpdateState {
+    pub fn new() -> Self {
+        Self {
+            update_request_opt: None,
+            needs_update: true,
+        }
+    }
+
+    pub fn subscribe(&mut self) -> oneshot::Receiver<(StatusCode, String)> {
+        if let Some(request) = self.update_request_opt.take() {
+            request
+                .send((StatusCode::BAD_REQUEST, format!("request overwritten")))
+                .expect("Unable to send request overwritten update response.");
+        }
+
+        let (sender, receiver) = oneshot::channel();
+        self.update_request_opt = Some(sender);
+        receiver
+    }
+
+    /// attempts to send a completed response
+    /// returning true on success and false on failure to send
+    pub fn try_complete(&mut self, code: StatusCode, response: String) -> bool {
+        if let Some(request) = self.update_request_opt.take() {
+            self.needs_update = false;
+            request
+                .send((code, response))
+                .expect("Unable to send update response.");
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl SessionState {
+    pub fn new(color: Option<PlayerColor>) -> Self {
+        Self {
+            color,
+            update_state: SessionUpdateState::new(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct HostStateResponse<'a> {
+    players: &'a [PlayerColor],
+    host: Option<PlayerColor>,
+}
+
+#[derive(Debug, Serialize)]
+struct PlayerStateResponse<'a> {
+    players: &'a [PlayerColor],
+}
+
+#[derive(Debug)]
 struct SessionManager {
-    host: Option<SessionToken>,
+    host: Option<(SessionToken, SessionUpdateState)>,
 
     player_event_sender: Sender<PlayerEvent>,
-    kick_player_reciever: Receiver<PlayerColor>,
 
     session_count: usize,
-    token_player_map: HashMap<SessionToken, Option<PlayerColor>>,
+    session_states: HashMap<SessionToken, SessionState>,
+
     used_players: DenseComponentManager<PlayerColor, SessionToken>,
-    allow_joins: Arc<AtomicBool>,
+    allow_joins: bool,
 }
 
 impl SessionManager {
-    pub fn new(
-        player_event_sender: Sender<PlayerEvent>,
-        kick_player_reciever: Receiver<PlayerColor>,
-        allow_joins: Arc<AtomicBool>,
-    ) -> Self {
+    pub fn new(player_event_sender: Sender<PlayerEvent>) -> Self {
         Self {
             host: None,
 
             session_count: 0,
             player_event_sender,
-            kick_player_reciever,
-            token_player_map: Default::default(),
+            session_states: HashMap::with_capacity(PlayerColor::COLOR_COUNT),
             used_players: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
-            allow_joins,
+            allow_joins: false,
         }
+    }
+
+    pub fn allow_joins(&mut self) {
+        if !self.allow_joins {
+            self.mark_all_need_update();
+            self.allow_joins = true;
+        }
+    }
+
+    pub fn block_joins(&mut self) {
+        if self.allow_joins {
+            self.allow_joins = false;
+            self.mark_all_need_update();
+        }
+    }
+
+    /// builds an update request
+    pub fn build_player_state_response(players: &[PlayerColor]) -> String {
+        let state = PlayerStateResponse {
+            players,
+        };
+
+        serde_json::to_string(&state).unwrap()
+    }
+
+    /// builds a host update request
+    pub fn build_host_state_response(host: Option<PlayerColor>, players: &[PlayerColor]) -> String {
+        let state = HostStateResponse { players, host };
+
+        serde_json::to_string(&state).unwrap()
+    }
+
+    /// propagate an update that pertains to everyone
+    /// DOES NOT mark any player as needing an update
+    /// only unmarks need_update IF UPDATE IS SENT
+    pub fn send_global_state(&mut self) {
+        let players: Vec<PlayerColor> = self.used_players.entity_iter().collect();
+
+        // propagate player update
+        for session in self.session_states.values_mut() {
+            session.update_state.try_complete(
+                StatusCode::ACCEPTED,
+                Self::build_player_state_response(players.as_slice()),
+            );
+        }
+
+        self.send_host_state();
+    }
+
+    /// propagate an update to a single player
+    /// DOES NOT mark the player as needing an update
+    /// only unmarks need_update IF UPDATE IS SENT
+    pub fn send_player_state(&mut self, token: &SessionToken) {
+        let session = if let Some(session) = self.session_states.get_mut(token) {
+            session
+        } else {
+            return;
+        };
+        let players: Vec<PlayerColor> = self.used_players.entity_iter().collect();
+
+        let update_state = &mut session.update_state;
+        update_state.try_complete(
+            StatusCode::ACCEPTED,
+            Self::build_player_state_response(players.as_slice()),
+        );
+    }
+
+    /// propagate an update that pertains only to the host
+    /// DOES NOT mark host as needing an update
+    /// only unmarks need_update IF UPDATE IS SENT
+    pub fn send_host_state(&mut self) {
+        let (host_token, session) = if let Some((host_token, session)) = self.host.as_mut() {
+            (host_token, session)
+        } else {
+            return;
+        };
+
+        let players: Vec<PlayerColor> = self.used_players.entity_iter().collect();
+
+        session.try_complete(
+            StatusCode::ACCEPTED,
+            Self::build_host_state_response(
+                self.session_states.get(host_token).unwrap().color,
+                &players,
+            ),
+        );
+    }
+
+    // marks all sessions as needing an update
+    fn mark_players_need_update(&mut self) {
+        for state in self.session_states.values_mut() {
+            state.update_state.needs_update = true;
+        }
+    }
+
+    // marks the host as needing an update
+    fn mark_host_needs_update(&mut self) {
+        if let Some((_, host_state)) = self.host.as_mut() {
+            host_state.needs_update = true;
+        }
+    }
+
+    // marks all sessions as needing an update
+    fn mark_all_need_update(&mut self) {
+        self.mark_players_need_update();
+        self.mark_host_needs_update();
     }
 
     pub fn has_host(&self) -> bool {
         self.host.is_some()
     }
 
-    pub fn set_host(&mut self, token: SessionToken) {
-        // reserve host's player
-        if !self.token_player_map.contains_key(&token) {
-            self.token_player_map.insert(token.clone(), None);
-            self.session_count += 1;
-        }
-
-        self.host = Some(token);
-    }
-
     pub fn is_host(&mut self, token: &SessionToken) -> bool {
-        if let Some(host_token) = &self.host {
+        if let Some((host_token, _)) = &self.host {
             host_token == token
         } else {
             false
         }
     }
 
-    fn handle_kicks(&mut self) {
-        for player in self.kick_player_reciever.try_iter() {
-            if let Some(token) = self.used_players.remove(player)
-                && Some(&token) != (&self.host).as_ref()
-            {
-                self.token_player_map.remove(&token);
-                self.session_count -= 1;
+    /// subscribe to next controller update
+    pub fn subscribe_to_controller_update(
+        &mut self,
+        token: &SessionToken,
+    ) -> Option<oneshot::Receiver<(StatusCode, String)>> {
+        let session = if let Some(session) = self.session_states.get_mut(token) {
+            session
+        } else {
+            return None;
+        };
+
+        Some(session.update_state.subscribe())
+    }
+
+    /// subscribe to next host update
+    pub fn subscribe_to_host_update(
+        &mut self,
+        token: &SessionToken,
+    ) -> Option<oneshot::Receiver<(StatusCode, String)>> {
+        if let Some((host_token, host_state)) = &mut self.host {
+            if host_token != token {
+                return None;
             }
+
+            Some(host_state.subscribe())
+        } else {
+            return None;
         }
     }
 
     /// assigns the host a player
     /// panics if there currently is no host
     /// check if a token is host before calling this method to avoid panic
-    pub fn assign_host_player(&mut self, color: PlayerColor) -> Result<(), NewSessionError> {
+    pub fn new_host_player(&mut self, color: PlayerColor) -> Result<(), NewSessionError> {
         assert!(self.has_host(), "No host, cannot assign host player.");
-
-        self.handle_kicks();
 
         if self.session_count >= PlayerColor::COLOR_COUNT {
             return Err(NewSessionError::GameFull);
@@ -192,8 +366,8 @@ impl SessionManager {
             return Err(NewSessionError::PlayerAlreadyUsed);
         }
 
-        let host_token = &self.host.as_ref().unwrap();
-        *self.token_player_map.get_mut(&host_token).unwrap() = Some(color);
+        let host_token = &self.host.as_ref().unwrap().0;
+        self.session_states.get_mut(&host_token).unwrap().color = Some(color);
         self.player_event_sender
             .send(PlayerEvent::Joined(color))
             .expect("Could not send new player to main thread.");
@@ -201,14 +375,15 @@ impl SessionManager {
             .send(PlayerEvent::SetHost(color))
             .expect("Could not send new player to main thread.");
 
+        self.mark_all_need_update();
+        self.send_global_state();
+
         Ok(())
     }
 
     /// creates a new player
     pub fn new_player(&mut self, color: PlayerColor) -> Result<SessionToken, NewSessionError> {
-        self.handle_kicks();
-
-        if !self.allow_joins.load(Ordering::Relaxed) {
+        if !self.allow_joins {
             return Err(NewSessionError::NewJoinsBlocked);
         }
 
@@ -222,17 +397,21 @@ impl SessionManager {
 
         let token = {
             let mut token = SessionToken::new();
-            while self.token_player_map.contains_key(&token) {
+            while self.session_states.contains_key(&token) {
                 token = SessionToken::new();
             }
             token
         };
 
-        self.token_player_map.insert(token.clone(), Some(color));
+        self.session_states
+            .insert(token.clone(), SessionState::new(Some(color)));
         self.used_players.insert(color, token.clone());
         self.player_event_sender
             .send(PlayerEvent::Joined(color))
             .expect("Could not send new player to main thread.");
+
+        self.mark_all_need_update();
+        self.send_global_state();
 
         Ok(token.clone())
     }
@@ -242,11 +421,9 @@ impl SessionManager {
         &mut self,
         token: &SessionToken,
     ) -> Result<PlayerColor, InvalidSessionError> {
-        self.handle_kicks();
-
-        match self.token_player_map.get(token) {
-            Some(color_opt) => match *color_opt {
-                Some(color) => Ok(color),
+        match self.session_states.get(token) {
+            Some(session_opt) => match &session_opt.color {
+                Some(color) => Ok(*color),
                 None => Err(InvalidSessionError::DoesNotExist),
             },
             None => Err(InvalidSessionError::DoesNotExist),
@@ -255,11 +432,49 @@ impl SessionManager {
 
     /// checks if a token controlls a player
     pub fn is_player(&mut self, token: &SessionToken) -> bool {
-        self.handle_kicks();
-
-        match self.token_player_map.get(token) {
-            Some(color_opt) => color_opt.is_some(),
+        match self.session_states.get(token) {
+            Some(session_opt) => session_opt.color.is_some(),
             None => false,
+        }
+    }
+
+    pub fn set_host(&mut self, token: SessionToken) {
+        // reserve host's player
+        if !self.session_states.contains_key(&token) {
+            self.session_states
+                .insert(token.clone(), SessionState::new(None));
+            self.session_count += 1;
+        }
+
+        if let Some((_, update_state)) = self.host.take() {
+            if let Some(request) = update_state.update_request_opt {
+                request
+                    .send((
+                        StatusCode::FORBIDDEN,
+                        String::from("Host privileges revoked"),
+                    ))
+                    .expect("Unable to send host change message.");
+            }
+        }
+
+        self.host = Some((token, SessionUpdateState::new()));
+    }
+
+    pub fn kick_player(&mut self, player: PlayerColor) {
+        if let Some(token) = self.used_players.remove(player)
+            && Some(&token) != (&self.host).as_ref().map(|(t, _)| t)
+        {
+            let session_state = self.session_states.remove(&token).unwrap();
+            self.session_count -= 1;
+
+            if let Some(request) = session_state.update_state.update_request_opt {
+                request
+                    .send((StatusCode::FORBIDDEN, String::from("You have been kicked")))
+                    .expect("Unable to send kick message");
+            }
+
+            self.mark_all_need_update();
+            self.send_global_state();
         }
     }
 }
@@ -268,7 +483,7 @@ impl SessionManager {
 pub struct ServerState {
     input_sender: Sender<PlayerInputEvent>,
     host_command_sender: Sender<PrivateHostCommand>,
-    sessions: Mutex<SessionManager>,
+    sessions: Arc<Mutex<SessionManager>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -282,24 +497,28 @@ pub struct GameServer {
     input_receiver: Receiver<PlayerInputEvent>,
     player_event_receiver: Receiver<PlayerEvent>,
     host_command_receiver: Receiver<PrivateHostCommand>,
-    kick_player_sender: Sender<PlayerColor>,
+
+    sessions: Arc<Mutex<SessionManager>>,
 
     service_thread: JoinHandle<Result<(), tokio::io::Error>>,
-    allow_joins: Arc<AtomicBool>,
     ip_addr: String,
 }
 
 impl GameServer {
     pub const HOST_PATH: &str = "/games/host";
-    pub const CLAIM_HOST_PATH: &str = "/games/host/claim";
+    pub const IS_HOST_API_PATH: &str = "/games/host/is-host";
+    pub const HOST_ASSIGNMENT_PATH: &str = "/games/host/claim";
+    pub const HOST_EVENT_STREAM_PATH: &str = "/games/events";
+    pub const HOST_STATE_PATH: &str = "/games/host/state";
     pub const HOST_LOBBY_PATH: &str = "/games/host/start-lobby";
     pub const HOST_GAME_SELECTION_PATH: &str = "/games/host/select-game";
-    pub const IS_HOST_API_PATH: &str = "/games/host/is-host";
 
     pub const CONTROLLER_PATH: &str = "/games";
-    pub const INPUT_API_PATH: &str = "/games/input";
-    pub const PLAYER_ASSIGNMENT_API_PATH: &str = "/games/get-session";
     pub const IS_PLAYER_API_PATH: &str = "/games/is-player";
+    pub const PLAYER_ASSIGNMENT_API_PATH: &str = "/games/get-session";
+    pub const CONTROLLER_EVENT_STREAM_PATH: &str = "/games/events";
+    pub const CONTROLLER_STATE_PATH: &str = "/games/state";
+    pub const INPUT_API_PATH: &str = "/games/input";
 
     pub const STATIC_CONTROLLER_FILES_PATH: &str = "./static/controller";
     pub const STATIC_HOST_FILES_PATH: &str = "./static/host";
@@ -307,6 +526,150 @@ impl GameServer {
     pub const SESSION_COOKIE_NAME: &str = "session_id";
 
     pub const COOKIE_LIFETIME: Duration = Duration::days(7);
+
+    fn parse_session_cookie(jar: &CookieJar) -> Result<SessionToken, (StatusCode, String)> {
+        let token_string = match jar.get(Self::SESSION_COOKIE_NAME) {
+            Some(cookie) => cookie,
+            None => {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    format!("Missing {}", Self::SESSION_COOKIE_NAME),
+                ));
+            }
+        }
+        .value_trimmed();
+        match SessionToken::from_str(token_string) {
+            Some(token) => Ok(token),
+            None => Err((
+                StatusCode::UNAUTHORIZED,
+                format!("Invalid {}", Self::SESSION_COOKIE_NAME),
+            )),
+        }
+    }
+
+    async fn controller_event_handler(
+        State(state): State<Arc<ServerState>>,
+        jar: CookieJar,
+    ) -> (StatusCode, String) {
+        let token = match Self::parse_session_cookie(&jar) {
+            Ok(t) => t,
+            Err(msg) => return msg,
+        };
+
+        let subscription = {
+            let mut sessions_lock = match state.sessions.lock() {
+                Ok(lock) => lock,
+                Err(msg) => panic!("{msg}"),
+            };
+
+            match sessions_lock.subscribe_to_controller_update(&token) {
+                Some(rx) => rx,
+                None => return (StatusCode::FORBIDDEN, format!("Not a player")),
+            }
+        };
+
+        match subscription.await {
+            Ok(v) => v,
+            Err(msg) => panic!("{msg}"),
+        }
+    }
+
+    async fn controller_state_handler(
+        State(state): State<Arc<ServerState>>,
+        jar: CookieJar,
+    ) -> (StatusCode, String) {
+        let token = match Self::parse_session_cookie(&jar) {
+            Ok(t) => t,
+            Err(msg) => return msg,
+        };
+
+        let subscription = {
+            let mut sessions_lock = match state.sessions.lock() {
+                Ok(lock) => lock,
+                Err(msg) => panic!("{msg}"),
+            };
+
+            match sessions_lock.subscribe_to_controller_update(&token) {
+                Some(rx) => rx,
+                None => return (StatusCode::FORBIDDEN, format!("Not a player")),
+            }
+        };
+
+        {
+            let mut sessions_lock = match state.sessions.lock() {
+                Ok(lock) => lock,
+                Err(msg) => panic!("{msg}"),
+            };
+            sessions_lock.send_player_state(&token);
+        }
+
+        match subscription.await {
+            Ok(v) => v,
+            Err(msg) => panic!("{msg}"),
+        }
+    }
+
+    async fn host_event_handler(
+        State(state): State<Arc<ServerState>>,
+        jar: CookieJar,
+    ) -> (StatusCode, String) {
+        let token = match Self::parse_session_cookie(&jar) {
+            Ok(t) => t,
+            Err(msg) => return msg,
+        };
+
+        let subscription = {
+            let mut sessions_lock = match state.sessions.lock() {
+                Ok(lock) => lock,
+                Err(msg) => panic!("{msg}"),
+            };
+
+            match sessions_lock.subscribe_to_host_update(&token) {
+                Some(rx) => rx,
+                None => return (StatusCode::FORBIDDEN, format!("Note the host")),
+            }
+        };
+
+        match subscription.await {
+            Ok(v) => v,
+            Err(msg) => panic!("{msg}"),
+        }
+    }
+
+    async fn host_state_handler(
+        State(state): State<Arc<ServerState>>,
+        jar: CookieJar,
+    ) -> (StatusCode, String) {
+        let token = match Self::parse_session_cookie(&jar) {
+            Ok(t) => t,
+            Err(msg) => return msg,
+        };
+
+        let subscription = {
+            let mut sessions_lock = match state.sessions.lock() {
+                Ok(lock) => lock,
+                Err(msg) => panic!("{msg}"),
+            };
+
+            match sessions_lock.subscribe_to_host_update(&token) {
+                Some(rx) => rx,
+                None => return (StatusCode::FORBIDDEN, format!("Note the host")),
+            }
+        };
+
+        {
+            let mut sessions_lock = match state.sessions.lock() {
+                Ok(lock) => lock,
+                Err(msg) => panic!("{msg}"),
+            };
+            sessions_lock.send_host_state();
+        }
+
+        match subscription.await {
+            Ok(v) => v,
+            Err(msg) => panic!("{msg}"),
+        }
+    }
 
     async fn is_player_handler(State(state): State<Arc<ServerState>>, jar: CookieJar) -> String {
         let mut sessions_lock = match state.sessions.lock() {
@@ -325,10 +688,7 @@ impl GameServer {
         "false".to_string()
     }
 
-    async fn is_host_handler(
-        State(state): State<Arc<ServerState>>,
-        jar: CookieJar,
-    ) -> String {
+    async fn is_host_handler(State(state): State<Arc<ServerState>>, jar: CookieJar) -> String {
         let mut sessions_lock = match state.sessions.lock() {
             Ok(lock) => lock,
             Err(msg) => panic!("{}", msg),
@@ -350,24 +710,9 @@ impl GameServer {
         jar: CookieJar,
         Json(playload): Json<DeserializableInputEvent>,
     ) -> (StatusCode, String) {
-        let token_string = match jar.get(Self::SESSION_COOKIE_NAME) {
-            Some(cookie) => cookie,
-            None => {
-                return (
-                    StatusCode::UNAUTHORIZED,
-                    format!("Missing {}", Self::SESSION_COOKIE_NAME),
-                );
-            }
-        }
-        .value_trimmed();
-        let token = match SessionToken::from_str(token_string) {
-            Some(token) => token,
-            None => {
-                return (
-                    StatusCode::UNAUTHORIZED,
-                    format!("Invalid {}", Self::SESSION_COOKIE_NAME),
-                );
-            }
+        let token = match Self::parse_session_cookie(&jar) {
+            Ok(t) => t,
+            Err(msg) => return msg,
         };
 
         let mut sessions_lock = match state.sessions.lock() {
@@ -378,7 +723,7 @@ impl GameServer {
             Ok(player) => player,
             Err(InvalidSessionError::DoesNotExist) => {
                 return (
-                    StatusCode::UNAUTHORIZED,
+                    StatusCode::FORBIDDEN,
                     format!("Expired {}", Self::SESSION_COOKIE_NAME),
                 );
             }
@@ -396,7 +741,7 @@ impl GameServer {
         }
     }
 
-    async fn claim_host_handler(
+    async fn host_assignment_handler(
         State(state): State<Arc<ServerState>>,
         jar: CookieJar,
     ) -> (StatusCode, CookieJar, String) {
@@ -438,24 +783,9 @@ impl GameServer {
         jar: &CookieJar,
         sessions: &mut SessionManager,
     ) -> Result<(), (StatusCode, String)> {
-        let token_string = match jar.get(Self::SESSION_COOKIE_NAME) {
-            Some(cookie) => cookie,
-            None => {
-                return Err((
-                    StatusCode::UNAUTHORIZED,
-                    format!("Missing {}", Self::SESSION_COOKIE_NAME),
-                ));
-            }
-        }
-        .value_trimmed();
-        let token = match SessionToken::from_str(token_string) {
-            Some(token) => token,
-            None => {
-                return Err((
-                    StatusCode::UNAUTHORIZED,
-                    format!("Invalid {}", Self::SESSION_COOKIE_NAME),
-                ));
-            }
+        let token = match Self::parse_session_cookie(&jar) {
+            Ok(t) => t,
+            Err(msg) => return Err(msg),
         };
 
         if !sessions.is_host(&token) {
@@ -529,14 +859,10 @@ impl GameServer {
                 // case where token corresponds to a host but not a player,
                 // needs to be assigned a player
                 if sessions_lock.is_host(&token) {
-                    if let Err(e) = sessions_lock.assign_host_player(requested_color) {
+                    if let Err(e) = sessions_lock.new_host_player(requested_color) {
                         return (StatusCode::BAD_REQUEST, jar, e.to_string());
                     } else {
-                        return (
-                            StatusCode::ACCEPTED,
-                            jar,
-                            "Player created".to_string(),
-                        );
+                        return (StatusCode::ACCEPTED, jar, "Player created".to_string());
                     }
                 }
             }
@@ -572,17 +898,12 @@ impl GameServer {
         let (input_sender, input_receiver) = mpsc::channel();
         let (new_player_sender, new_player_receiver) = mpsc::channel();
         let (host_command_sender, host_command_receiver) = mpsc::channel();
-        let (kick_player_sender, kick_player_receiver) = mpsc::channel();
-        let allow_joins = Arc::new(AtomicBool::new(false));
 
+        let sessions = Arc::new(Mutex::new(SessionManager::new(new_player_sender)));
         let state = ServerState {
             input_sender,
             host_command_sender,
-            sessions: Mutex::new(SessionManager::new(
-                new_player_sender,
-                kick_player_receiver,
-                allow_joins.clone(),
-            )),
+            sessions: sessions.clone(),
         };
 
         let app = Router::new()
@@ -591,19 +912,34 @@ impl GameServer {
                 Self::CONTROLLER_PATH,
                 ServeDir::new(Self::STATIC_CONTROLLER_FILES_PATH),
             )
-            .route(Self::INPUT_API_PATH, post(Self::input_handler))
+            // controller apis
             .route(Self::IS_PLAYER_API_PATH, post(Self::is_player_handler))
             .route(
                 Self::PLAYER_ASSIGNMENT_API_PATH,
                 post(Self::player_assignment_handler),
             )
             .route(
+                Self::CONTROLLER_EVENT_STREAM_PATH,
+                post(Self::controller_event_handler),
+            )
+            .route(
+                Self::CONTROLLER_STATE_PATH,
+                post(Self::controller_state_handler),
+            )
+            .route(Self::INPUT_API_PATH, post(Self::input_handler))
+            // host apis
+            .route(Self::IS_HOST_API_PATH, post(Self::is_host_handler))
+            .route(
+                Self::HOST_ASSIGNMENT_PATH,
+                post(Self::host_assignment_handler),
+            )
+            .route(Self::HOST_STATE_PATH, post(Self::host_state_handler))
+            .route(Self::HOST_EVENT_STREAM_PATH, post(Self::host_event_handler))
+            .route(
                 Self::HOST_GAME_SELECTION_PATH,
                 post(Self::game_selector_mode_handler),
             )
-            .route(Self::IS_HOST_API_PATH, post(Self::is_host_handler))
             .route(Self::HOST_LOBBY_PATH, post(Self::lobby_mode_handler))
-            .route(Self::CLAIM_HOST_PATH, post(Self::claim_host_handler))
             .with_state(state.into());
 
         let listener = tokio::net::TcpListener::bind(&host_addr)
@@ -619,15 +955,18 @@ impl GameServer {
             }
         }
 
-        Self {
+        let out = Self {
             ip_addr: host_addr,
-            allow_joins,
+            sessions,
             input_receiver,
             player_event_receiver: new_player_receiver,
             host_command_receiver,
-            kick_player_sender,
             service_thread,
-        }
+        };
+
+        out.allow_new_players();
+
+        out
     }
 
     /// gets the address of the server
@@ -637,20 +976,27 @@ impl GameServer {
 
     /// blocks new players from joining
     pub fn block_new_players(&self) {
-        self.allow_joins.store(false, Ordering::Relaxed);
+        self.sessions
+            .lock()
+            .expect("Unable to block new players")
+            .block_joins();
     }
 
     /// allows new players to join
     /// (enabled upon server creation)
     pub fn allow_new_players(&self) {
-        self.allow_joins.store(true, Ordering::Relaxed);
+        self.sessions
+            .lock()
+            .expect("Unable to allow new players")
+            .allow_joins();
     }
 
-    /// sends a signal to kick the given player
-    pub fn kick_player(&self, player: PlayerColor) {
-        self.kick_player_sender
-            .send(player)
-            .expect("Unable to kick player");
+    /// kicks the given player
+    pub fn kick_player(&self, color: PlayerColor) {
+        self.sessions
+            .lock()
+            .expect("Unable to kick player")
+            .kick_player(color);
     }
 
     pub fn poll_inputs(&self) -> impl Iterator<Item = PlayerInputEvent> {

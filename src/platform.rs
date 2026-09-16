@@ -1,14 +1,7 @@
 use std::{fmt::Debug, path::Path};
 
 use crate::{
-    board::BoardManager,
-    cheat_buffer::CheatBuffer,
-    color::IColor,
-    fonts,
-    geometry::{IConvexShape, IRect, IVec2},
-    intermediate_representations::VisualInfo,
-    lua::FromLuaTable,
-    resources::{TextureInfo, VisualComponentProvider},
+    assets, board::BoardManager, cheat_buffer::CheatBuffer, color::IColor, geometry::{IConvexShape, IRect, IVec2}, intermediate_representations::VisualInfo, lua::FromLuaTable, resources::{TextureInfo, VisualComponentProvider}
 };
 
 #[derive(Debug)]
@@ -18,29 +11,26 @@ pub struct GlobalAssets<T, F> {
     pub cheat_buffer_font: F,
 }
 
-pub const OPEN_HAND_BYTES: &[u8] = include_bytes!("open_hand.png");
-pub const CLOSED_HAND_BYTES: &[u8] = include_bytes!("closed_hand.png");
-
 impl<T: 'static, F: 'static> GlobalAssets<T, F> {
     pub const CHEAT_BUFFER_FONT_SIZE: f32 = 28.0;
 
     pub fn new<R: ITextureCompiler<Texture = T, Font = F>>(compiler: &mut R) -> Self {
-        let open_hand_texture = match compiler.load_texture_from_memory(".png", OPEN_HAND_BYTES) {
+        let open_hand_texture = match compiler.load_texture_from_memory(assets::OPEN_HAND.filetype, assets::OPEN_HAND.data) {
             Ok(t) => t,
             Err(msg) => panic!("Unable to load open hand texture: {msg}"),
         };
-        let closed_hand_texture = match compiler.load_texture_from_memory(".png", CLOSED_HAND_BYTES)
+        let closed_hand_texture = match compiler.load_texture_from_memory(assets::CLOSED_HAND.filetype, assets::CLOSED_HAND.data)
         {
             Ok(t) => t,
             Err(msg) => panic!("Unable to load open hand texture: {msg}"),
         };
 
-        let font_data = fonts::JETBRAINS_MONO;
+        let font_data = assets::JETBRAINS_MONO;
         let cheat_buffer_font = match compiler.load_font_from_memory(
             font_data.filetype,
             font_data.data,
             Self::CHEAT_BUFFER_FONT_SIZE as u32,
-            fonts::ASCII_GRAPHIC_CHARSET,
+            assets::ASCII_GRAPHIC_CHARSET,
         ) {
             Ok(t) => t,
             Err(msg) => panic!("Unable to load open hand texture: {msg}"),

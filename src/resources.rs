@@ -8,16 +8,10 @@ use std::{
 
 use mlua::Value;
 use roaring::RoaringBitmap;
+use serde::Serialize;
 
 use crate::{
-    color::IColor,
-    ecs::{DenseComponentManager, DenseSet, Entity, EntityTrait, ResourceManager},
-    fonts::{self, BuiltinFontData},
-    geometry::{IRect, IVec2},
-    intermediate_representations::VisualInfo,
-    lua::FromLuaValue,
-    platform::ITextureCompiler,
-    quadtree::QuadTree,
+    assets::{self, BuiltinFontData}, color::IColor, ecs::{DenseComponentManager, DenseSet, Entity, EntityTrait, ResourceManager}, geometry::{IRect, IVec2}, intermediate_representations::VisualInfo, lua::FromLuaValue, platform::ITextureCompiler, quadtree::QuadTree
 };
 
 #[cfg(target_os = "windows")]
@@ -661,7 +655,8 @@ impl<R: IRect> QuadTreeManager<R> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PlayerColor {
     Red,
     Orange,
@@ -1283,7 +1278,7 @@ impl<F> FontManager<F> {
 
         // completely new font entry
         let mut temp_map = BTreeMap::new();
-        let characters = format!("{characters}{}", fonts::ASCII_GRAPHIC_CHARSET);
+        let characters = format!("{characters}{}", assets::ASCII_GRAPHIC_CHARSET);
         for size in sizes {
             let font_result = match font_identifier {
                 FontLoadIdentifier::Path(path) => renderer.load_font(&path, *size, &characters),
@@ -1300,7 +1295,7 @@ impl<F> FontManager<F> {
                         charset: RoaringBitmap::from_iter(
                             characters
                                 .chars()
-                                .chain(fonts::ASCII_GRAPHIC_CHARSET.chars())
+                                .chain(assets::ASCII_GRAPHIC_CHARSET.chars())
                                 .map(|c| c as u32),
                         ),
                         sizes: temp_map,

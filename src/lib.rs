@@ -9,7 +9,7 @@ pub mod input;
 pub mod server;
 pub mod cheat_buffer;
 pub mod raylib_integrations;
-pub mod fonts;
+pub mod assets;
 pub mod color;
 pub mod bitvec;
 pub mod geometry;
