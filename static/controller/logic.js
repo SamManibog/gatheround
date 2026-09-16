@@ -27,6 +27,7 @@ async function sendTrackpadDelta(x, y) {
         headers: {
             "Content-Type": "application/json"
         },
+        credentials: 'include',
         body: JSON.stringify({
             kind: "TrackpadDelta",
             delta_x: x,
@@ -45,6 +46,7 @@ async function sendTrackpadPress() {
         headers: {
             "Content-Type": "application/json"
         },
+        credentials: 'include',
         body: JSON.stringify({
             kind: "TrackpadPress",
         })
@@ -118,11 +120,9 @@ trackpadArea.addEventListener('pointermove', (e) => {
 trackpadArea.addEventListener('pointerup', (e) => {
     if (!isTracking) return;
 
-    if (isDragging) {
-        wasJustTapped = false;
-    } else {
-        wasJustTapped = true;
+    if (!isDragging) {
         sendTrackpadPress();
+        console.log("tapped");
     }
 
     isTracking = false;
@@ -131,21 +131,25 @@ trackpadArea.addEventListener('pointerup', (e) => {
 
 let continuePlayerLoop = true;
 async function initPlayerState() {
+    continueJoinLoop = false;
+    continuePlayerLoop = true;
+
     const state_response = await fetch("/games/player-state", {
-        method: "POST"
+        method: "POST",
+        credentials: 'include',
     })
 
     console.log("TODO: init player state, got: ", await state_response.text());
 
     // begin player event loop
-    continueJoinLoop = false;
     continuePlayerLoop = true;
     handlePlayerEvents();
 }
 
 async function handlePlayerEvents() {
     const event_response = await fetch("/games/player-events", {
-        method: "POST"
+        method: "POST",
+        credentials: 'include',
     })
 
     console.log("TODO: handle player events, got: ", await event_response.text());
@@ -177,6 +181,7 @@ async function handleColorButtonClick(event) {
         headers: {
             "Content-Type": "application/json"
         },
+        credentials: 'include',
         body: JSON.stringify({
             color: color,
         })
@@ -186,7 +191,7 @@ async function handleColorButtonClick(event) {
         enterPlayerMode();
     } else {
         if (response.status == 423) {
-            self.enterWaitMode();
+            self.enterJoinMode();
         } else {
             console.error(`ERROR [${response.status}]: ${await response.text()}`);
         }
@@ -199,28 +204,73 @@ colorButtons.forEach(button => {
 
 let continueJoinLoop = true;
 async function initJoinState() {
-    const state_response = await fetch("/games/join-state", {
-        method: "POST"
+    continuePlayerLoop = false;
+    continueJoinLoop = true;
+
+    const response = await fetch("/games/join-state", {
+        method: "POST",
+        credentials: 'include',
     })
 
-    console.log("TODO: init join state, got: ", await state_response.text());
+    if (response.ok) {
+        handleJoinState(await response.json());
+    } else {
+        console.error(`ERROR [${response.status}]: ${await response.text()}`);
+    }
 
     // begin join event loop
-    continuePlayerLoop = false;
     continueJoinLoop = true;
     handleJoinEvents();
 }
 
 async function handleJoinEvents() {
-    const event_response = await fetch("/games/join-events", {
-        method: "POST"
+    const response = await fetch("/games/join-events", {
+        method: "POST",
+        credentials: 'include',
     })
 
-    console.log("TODO: handle join events, got: ", await event_response.text());
+    if (response.ok) {
+        console.log(await response.text())
+        handleJoinState(await response.json());
+    } else {
+        console.error(`ERROR [${response.status}]: ${await response.text()}`);
+    }
 
     // call again to perpetuate loop
     if (continueJoinLoop) {
         handleJoinEvents();
+    }
+}
+
+function handleJoinState(state) {
+    const playerButtons = {
+        red: document.getElementById("playerRed"),
+        orange: document.getElementById("playerOrange"),
+        yellow: document.getElementById("playerYellow"),
+        green: document.getElementById("playerGreen"),
+        blue: document.getElementById("playerBlue"),
+        purple: document.getElementById("playerPurple"),
+        pink: document.getElementById("playerPink"),
+        lime: document.getElementById("playerLime"),
+        cyan: document.getElementById("playerCyan"),
+        black: document.getElementById("playerBlack"),
+        white: document.getElementById("playerWhite"),
+        brown: document.getElementById("playerBrown"),
+    };
+
+    const playerSet = new Set();
+    for (player of state.players) {
+        console.log("playing: ", player);
+        playerSet.add(player);
+    }
+
+    for (buttonName in playerButtons) {
+        const button = playerButtons[buttonName];
+        if (playerSet.has(button)) {
+            button.classList.add("invisible");
+        } else {
+            button.classList.remove("invisible");
+        }
     }
 }
 
@@ -230,31 +280,27 @@ async function handleJoinEvents() {
 async function enterPlayerMode() {
     console.log("entered player mode");
     focusPage("inputPage");
+    initPlayerState();
 }
 
 async function enterJoinMode() {
     console.log("entered join mode");
     focusPage("joinPage");
-}
-
-async function enterWaitMode() {
-    console.log("entered wait mode");
-    focusPage("joinsDisabledPage");
+    initJoinState();
 }
 
 async function connect() {
     const response = await fetch('/games/join', {
         method: "POST",
+        credentials: 'include',
     });
 
     const response_text = await response.text();
 
     if (response_text == "is player") {
         enterPlayerMode();
-    } else if (response.ok) {
-        enterJoinMode();
     } else {
-        enterWaitMode();
+        enterJoinMode();
     }
 }
 connect()

@@ -105,6 +105,9 @@ html, body {
     background-color: #00000000;
 }
 
+.invisible {
+    visibility: hidden;
+}
 
 .hidden {
     display: none;

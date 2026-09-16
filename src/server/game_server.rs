@@ -1,5 +1,6 @@
 use std::{
     hint::cold_path,
+    net::SocketAddr,
     sync::{
         Arc, Mutex,
         mpsc::{self, Receiver, Sender},
@@ -11,6 +12,7 @@ use axum_extra::extract::{
     CookieJar,
     cookie::{Cookie, SameSite},
 };
+use axum_server::tls_rustls::RustlsConfig;
 use serde::Deserialize;
 use time::Duration;
 use tokio::task::JoinHandle;
@@ -168,8 +170,11 @@ impl GameServer {
         };
 
         match subscription.await {
-            Ok(v) => {println!("sub ended");v},
-            Err(msg) => panic!("{msg}"),
+            Ok(v) => v,
+            Err(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("subscription could not be resolved"),
+            ),
         }
     }
 
@@ -239,7 +244,10 @@ impl GameServer {
 
         match subscription.await {
             Ok(v) => v,
-            Err(msg) => panic!("{msg}"),
+            Err(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("subscription could not be resolved"),
+            ),
         }
     }
 
@@ -368,7 +376,7 @@ impl GameServer {
 
         // if we have an invalid token, modify cookies
         match sessions_lock.new_session() {
-            Ok(token) => {
+            Some(token) => {
                 let mut session_cookie =
                     Cookie::new(Self::SESSION_COOKIE_NAME, token.to_url_string());
                 session_cookie.set_same_site(SameSite::Strict);
@@ -381,7 +389,7 @@ impl GameServer {
                 (StatusCode::CREATED, updated_jar, format!("new session"))
             }
 
-            Err(err) => (err.status_code(), jar, format!("{err}")),
+            None => (StatusCode::LOCKED, jar, format!("joins disabled")),
         }
     }
 
@@ -433,6 +441,19 @@ impl GameServer {
             );
         }
 
+        // has session, but not host
+        if let Ok(token) = Self::parse_session_cookie(&jar) {
+            session_lock.set_host(token.clone());
+
+            state
+                .host_command_sender
+                .send(PrivateHostCommand::HostConnected)
+                .expect("Unable to send host connection signal.");
+
+            return (StatusCode::ACCEPTED, jar, format!("new host"));
+        }
+
+        // no session, needs to be host now
         let token = SessionToken::new();
         session_lock.set_host(token.clone());
 
@@ -457,7 +478,18 @@ impl GameServer {
     /// creates and runs a new input server
     /// function does not return until a host has connected
     pub async fn run_new(address: String) -> Self {
-        let host_addr: String = address;
+        let socket_addr: SocketAddr = address.parse().expect("Unable to parse address");
+
+        let certified_key =
+            rcgen::generate_simple_self_signed(vec![format!("{}{}", address, Self::PLAYER_PATH)])
+                .expect("Unable to generate https certificate.");
+
+        let tls_config = RustlsConfig::from_pem(
+            certified_key.cert.pem().into_bytes(),
+            certified_key.signing_key.serialize_pem().into_bytes(),
+        )
+        .await
+        .expect("Unable to create TLS configuration");
 
         let (input_sender, input_receiver) = mpsc::channel();
         let (new_player_sender, new_player_receiver) = mpsc::channel();
@@ -505,13 +537,14 @@ impl GameServer {
             .route(Self::HOST_API_PATH, post(Self::host_api_handler))
             .with_state(state.into());
 
-        let listener = tokio::net::TcpListener::bind(&host_addr)
-            .await
-            .expect(&format!("Failed to bind to port: {host_addr}."));
-        let service_thread = tokio::spawn(async move { axum::serve(listener, app).await });
-        println!("Server started at {host_addr}.");
+        let service_thread = tokio::spawn(async move {
+            axum_server::bind_rustls(socket_addr, tls_config)
+                .serve(app.into_make_service())
+                .await
+        });
+        println!("Server started at https://{address}.");
 
-        println!("Awaiting host connection at {host_addr}{}", Self::HOST_PATH);
+        println!("Awaiting host connection at https://{address}{}", Self::HOST_PATH);
         for cmd in host_command_receiver.iter() {
             if cmd == PrivateHostCommand::HostConnected {
                 break;
@@ -519,7 +552,7 @@ impl GameServer {
         }
 
         let out = Self {
-            ip_addr: host_addr,
+            ip_addr: address,
             sessions,
             input_receiver,
             player_event_receiver: new_player_receiver,

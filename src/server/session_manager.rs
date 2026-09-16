@@ -23,7 +23,7 @@ pub enum SubscriptionKind {
 pub struct SessionToken([u8; Self::LENGTH]);
 
 impl SessionToken {
-    pub const LENGTH: usize = 32;
+    pub const LENGTH: usize = 8;
 
     pub fn new() -> Self {
         let mut bytes = [0; Self::LENGTH];
@@ -83,7 +83,7 @@ impl NewPlayerError {
             Self::NewJoinsDisabled => StatusCode::LOCKED,
             Self::PlayerAlreadyUsed => StatusCode::CONFLICT,
             Self::IsAlreadyPlayer => StatusCode::PRECONDITION_FAILED,
-            Self::SessionDoesNotExist => StatusCode::FORBIDDEN,
+            Self::SessionDoesNotExist => StatusCode::UNAUTHORIZED,
         }
     }
 }
@@ -96,28 +96,6 @@ impl Display for NewPlayerError {
             Self::PlayerAlreadyUsed => "color taken",
             Self::IsAlreadyPlayer => "is already player",
             Self::SessionDoesNotExist => "session does not exist",
-        };
-        write!(f, "{}", message)
-    }
-}
-
-#[derive(Debug)]
-pub(super) enum NewSessionError {
-    NewJoinsDisabled,
-}
-
-impl NewSessionError {
-    pub fn status_code(&self) -> StatusCode {
-        match self {
-            Self::NewJoinsDisabled => StatusCode::LOCKED,
-        }
-    }
-}
-
-impl Display for NewSessionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let message = match self {
-            Self::NewJoinsDisabled => "joins disabled",
         };
         write!(f, "{}", message)
     }
@@ -553,11 +531,12 @@ impl SessionManager {
     }
 
     /// creates a new session, returning its token on success
-    pub fn new_session(&mut self) -> Result<SessionToken, NewSessionError> {
+    pub fn new_session(&mut self) -> Option<SessionToken> {
         if !self.joins_allowed() {
-            return Err(NewSessionError::NewJoinsDisabled);
+            return None;
         }
 
+        // kill old session
         if self.non_player_sessions.len() >= Self::NON_PLAYER_SESSION_MAX {
             if let Some(kicked_token) = self.non_player_sessions.pop_front() {
                 let session = self.session_states.get_mut(&kicked_token).unwrap();
@@ -579,7 +558,7 @@ impl SessionManager {
             SessionState::NonPlayer(SessionUpdateState::new()),
         );
         self.non_player_sessions.push_back(token.clone());
-        Ok(token)
+        Some(token)
     }
 
     /// promotes the given non-player session to a player of the given color
@@ -608,9 +587,10 @@ impl SessionManager {
             None => return Err(NewPlayerError::SessionDoesNotExist),
         };
 
-        if session.is_player() {
-            return Err(NewPlayerError::IsAlreadyPlayer);
-        }
+        match session {
+            SessionState::Player(_) => return Err(NewPlayerError::IsAlreadyPlayer),
+            SessionState::NonPlayer(n) => n.try_complete(StatusCode::GONE, format!("upgraded to player")),
+        };
 
         self.non_player_sessions.remove(
             self.non_player_sessions
@@ -634,6 +614,18 @@ impl SessionManager {
             self.player_event_sender
                 .send(PlayerEvent::SetHost(color))
                 .expect("Could not set host event to main thread.");
+        }
+
+        if !self.joins_allowed() {
+            for token in self.non_player_sessions.drain(..) {
+                let session = self.session_states.remove(&token).unwrap();
+                match session {
+                    SessionState::NonPlayer(mut n) => {
+                        n.try_complete(StatusCode::FORBIDDEN, format!("kicked"))
+                    }
+                    SessionState::Player(_) => unreachable!(),
+                };
+            }
         }
 
         self.mark_all_need_update();
@@ -669,15 +661,8 @@ impl SessionManager {
             self.permanent_session_count += 1;
         }
 
-        if let Some((_, update_state)) = self.host.take() {
-            if let Some(request) = update_state.update_request_opt {
-                request
-                    .send((
-                        StatusCode::FORBIDDEN,
-                        String::from("Host privileges revoked"),
-                    ))
-                    .expect("Unable to send host change message.");
-            }
+        if let Some((_, mut update_state)) = self.host.take() {
+            update_state.try_complete(StatusCode::FORBIDDEN, String::from("kicked"));
         }
 
         self.host = Some((token, SessionUpdateState::new()));
@@ -685,26 +670,29 @@ impl SessionManager {
 
     /// kicks the player of the given color
     pub fn kick_player(&mut self, player: PlayerColor) {
-        if let Some(token) = self.players.remove(player)
-            && Some(&token) != (&self.host).as_ref().map(|(t, _)| t)
-        {
-            let session_state = self.session_states.remove(&token).unwrap();
-            self.permanent_session_count -= 1;
-
-            match session_state {
-                SessionState::Player(p) => {
-                    if let Some(request) = p.update_state.update_request_opt {
-                        request
-                            .send((StatusCode::FORBIDDEN, String::from("You have been kicked")))
-                            .expect("Unable to send kick message");
-                    }
-
-                    self.mark_all_need_update();
-                    self.send_global_state();
-                }
-
-                _ => unreachable!(),
+        // make sure player exists and is not the host
+        if let Some(token) = self.players.get(player) {
+            if Some(&token) == self.host.as_ref().map(|(t, _)| t).as_ref() {
+                return;
             }
+        } else {
+            return;
+        }
+
+        let token = self.players.remove(player).unwrap();
+        let session_state = self.session_states.remove(&token).unwrap();
+        self.permanent_session_count -= 1;
+
+        match session_state {
+            SessionState::Player(mut p) => {
+                p.update_state
+                    .try_complete(StatusCode::FORBIDDEN, String::from("kicked"));
+
+                self.mark_all_need_update();
+                self.send_global_state();
+            }
+
+            _ => unreachable!(),
         }
     }
 }

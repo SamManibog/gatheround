@@ -860,6 +860,7 @@ impl<'a> ITextureCompiler for TextureCompiler<'a> {
                 };
                 self.rl
                     .draw_texture_mode(self.thread, &mut texture, |mut painter| {
+                        painter.clear_background(Color::BLANK);
                         painter.draw_texture(&nonrender_texture, 0, 0, Color::WHITE);
                     });
                 Ok(texture)
@@ -893,6 +894,7 @@ impl<'a> ITextureCompiler for TextureCompiler<'a> {
                 };
                 self.rl
                     .draw_texture_mode(self.thread, &mut texture, |mut painter| {
+                        painter.clear_background(Color::BLANK);
                         painter.draw_texture(&nonrender_texture, 0, 0, Color::WHITE);
                     });
                 Ok(texture)

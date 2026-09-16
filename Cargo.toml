@@ -6,12 +6,13 @@ edition = "2024"
 [dependencies]
 axum = "0.8.9"
 axum-extra = { version = "0.12.6", features = ["cookie"] }
-axum-server = "0.8.0"
+axum-server = { version = "0.8.0", features = ["tls-rustls"]}
 base64 = "0.23.1"
 mlua = { version = "0.12.1", features = ["lua55", "vendored"] }
 notify = "8.2.0"
 rand = "0.10.2"
 raylib = { version = "6.0.0", features = ["raygui"] }
+rcgen = "0.14.10"
 regex = "1.13.1"
 roaring = "0.11.5"
 serde = { version = "1.0.229", features = ["derive"] }

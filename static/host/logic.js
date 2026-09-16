@@ -19,6 +19,7 @@ openLobbyButton.addEventListener("click", async (e) => {
         headers: {
             "Content-Type": "application/json"
         },
+        credentials: 'include',
         body: JSON.stringify({
             start_lobby: true,
         })
@@ -39,6 +40,7 @@ openGameSelectorButton.addEventListener("click", async (e) => {
         headers: {
             "Content-Type": "application/json"
         },
+        credentials: 'include',
         body: JSON.stringify({
             start_game_selector: true
         })
@@ -77,6 +79,7 @@ async function handleHostEvents() {
 async function claimHost() {
     const claim_response = await fetch('/games/claim-host', {
         method: "POST",
+        credentials: 'include',
     });
 
     if (!claim_response.ok) {
