@@ -7,24 +7,27 @@ use std::{
 use mlua::Lua;
 
 use crate::{
-    utils::color::IColor,
-    utils::ecs::{
-        DenseComponentManager, DenseSet, EntityTrait, NamedEntityManager, ResourceManager,
-        SparseSet,
-    },
+    app::GlobalAssets,
     game::GameEntry,
-    utils::geometry::{self, CollisionShape, IConvexShape, IRect, IVec2, NumericF32, RigidTransform},
     input::{InputEvent, PlayerInputEvent},
     intermediate_representations::{
         CollisionShapeIR, EntityIdentifier, ImageInfo, ImagePosition, PatternInfo, PatternType,
         PieceColliderIR, PieceIR, PileIR, TextboxInfo, VisualComponent, VisualInfo,
     },
     lua::FromLuaTable,
-    platform::{GlobalAssets, ITextureCompiler},
+    platform::ITextureCompiler,
     resources::{
         CollisionLayerEntity, CollisionLayerManager, CollisionShapeEntity, DrawLayerManager,
         PieceCollider, PieceEntity, PileManager, PlayerColor, PlayerManager, QuadTreeManager,
         SnapTargetManager, TagManager, TextureEntity, TextureManager,
+    },
+    utils::color::IColor,
+    utils::ecs::{
+        DenseComponentManager, DenseSet, EntityTrait, NamedEntityManager, ResourceManager,
+        SparseSet,
+    },
+    utils::geometry::{
+        self, CollisionShape, IConvexShape, IRect, IVec2, NumericF32, RigidTransform,
     },
 };
 

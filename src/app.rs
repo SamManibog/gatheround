@@ -3,16 +3,7 @@ use std::{cell::RefCell, fmt::Debug, path::PathBuf, rc::Rc};
 use mlua::{Lua, MultiValue};
 
 use crate::{
-    board::BoardManager,
-    cheat_buffer::CheatBuffer,
-    game::{self},
-    input::InputState,
-    lua::{FromLuaTable, get_lua_instance},
-    platform::{GlobalAssets, IPlatform, IRenderer},
-    resources::PlayerColor,
-    server::{GameServer, HostCommand, PlayerEvent},
-    utils::color::IColor,
-    utils::geometry::{IConvexShape, IRect, IVec2},
+    assets, board::BoardManager, cheat_buffer::CheatBuffer, game::{self}, input::InputState, lua::{FromLuaTable, get_lua_instance}, platform::{IPlatform, IRenderer, ITextureCompiler}, resources::PlayerColor, server::{GameServer, HostCommand, PlayerEvent}, utils::{color::IColor, geometry::{IConvexShape, IRect, IVec2}}
 };
 
 #[derive(Debug)]
@@ -40,6 +31,50 @@ impl BoardMode {
         }
     }
 }
+
+#[derive(Debug)]
+pub struct GlobalAssets<T, F> {
+    pub open_hand_texture: T,
+    pub closed_hand_texture: T,
+    pub cheat_buffer_font: F,
+}
+
+impl<T: 'static, F: 'static> GlobalAssets<T, F> {
+    pub const CHEAT_BUFFER_FONT_SIZE: f32 = 28.0;
+
+    pub fn new<R: ITextureCompiler<Texture = T, Font = F>>(compiler: &mut R) -> Self {
+        let open_hand_texture = match compiler
+            .load_texture_from_memory(assets::OPEN_HAND.filetype, assets::OPEN_HAND.data)
+        {
+            Ok(t) => t,
+            Err(msg) => panic!("Unable to load open hand texture: {msg}"),
+        };
+        let closed_hand_texture = match compiler
+            .load_texture_from_memory(assets::CLOSED_HAND.filetype, assets::CLOSED_HAND.data)
+        {
+            Ok(t) => t,
+            Err(msg) => panic!("Unable to load open hand texture: {msg}"),
+        };
+
+        let font_data = assets::JETBRAINS_MONO;
+        let cheat_buffer_font = match compiler.load_font_from_memory(
+            font_data.filetype,
+            font_data.data,
+            Self::CHEAT_BUFFER_FONT_SIZE as u32,
+            assets::ASCII_GRAPHIC_CHARSET,
+        ) {
+            Ok(t) => t,
+            Err(msg) => panic!("Unable to load open hand texture: {msg}"),
+        };
+
+        Self {
+            open_hand_texture,
+            closed_hand_texture,
+            cheat_buffer_font,
+        }
+    }
+}
+
 
 #[derive(Debug)]
 pub struct AppState<

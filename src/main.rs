@@ -2,25 +2,22 @@ use std::path::PathBuf;
 
 use gatheround::{
     app::{AppState, GameSettings},
-    raylib_integrations::RaylibPlatform,
+    platform::{IPlatform, raylib},
+    utils::geometry::IVec2,
 };
-use raylib::ffi::Vector2;
 
 #[tokio::main]
 async fn main() {
-    let dimensions = Vector2 {
-        x: 1920.0,
-        y: 1200.0,
-    };
+    type V = <raylib::Platform as IPlatform>::Vector2;
 
     let settings = GameSettings {
         games_directory: PathBuf::from(r"C:\Users\sfman\OneDrive\Desktop\tempgames"),
         ip_address: String::from("127.0.0.1:3000"),
-        dimensions,
+        dimensions: V::from_xy(1920.0, 1200.0),
     };
 
     let platform_generator =
-        |settings: &GameSettings<Vector2>| RaylibPlatform::new(settings.dimensions);
+        |settings: &GameSettings<V>| raylib::Platform::new(settings.dimensions);
 
     let mut app = AppState::new_with_settings(settings, platform_generator).await;
 

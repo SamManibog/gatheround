@@ -99,12 +99,12 @@ impl IColor for Color {
 }
 
 #[derive(Debug)]
-pub struct RaylibTextureCompiler<'a> {
+pub struct TextureCompiler<'a> {
     rl: &'a mut RaylibHandle,
     thread: &'a RaylibThread,
 }
 
-impl<'a> RaylibTextureCompiler<'a> {
+impl<'a> TextureCompiler<'a> {
     /// padding for compiled textures
     const TEXTURE_PADDING: u32 = 2;
 
@@ -643,7 +643,7 @@ impl<'a> RaylibTextureCompiler<'a> {
     }
 }
 
-impl<'a> ITextureCompiler for RaylibTextureCompiler<'a> {
+impl<'a> ITextureCompiler for TextureCompiler<'a> {
     type Texture = RenderTexture2D;
     type Font = Font;
     type Color = Color;
@@ -894,11 +894,11 @@ impl<'a> ITextureCompiler for RaylibTextureCompiler<'a> {
 }
 
 #[derive(Debug)]
-pub struct RaylibKeyboardReader<'a> {
+pub struct KeyboardReader<'a> {
     rl: &'a mut RaylibHandle,
 }
 
-impl<'a> IKeyboardReader for RaylibKeyboardReader<'a> {
+impl<'a> IKeyboardReader for KeyboardReader<'a> {
     fn is_up_key_pressed(&mut self) -> bool {
         self.rl.is_key_down(KeyboardKey::KEY_UP)
     }
@@ -933,7 +933,7 @@ impl<'a> IKeyboardReader for RaylibKeyboardReader<'a> {
 }
 
 #[derive(Debug)]
-pub struct RaylibRenderer<'a> {
+pub struct Renderer<'a> {
     rl: &'a mut RaylibHandle,
     thread: &'a RaylibThread,
     draw_layer_pool: &'a mut Vec<RenderTexture2D>,
@@ -941,7 +941,7 @@ pub struct RaylibRenderer<'a> {
     secs_since_cursor_moved: &'a mut f32,
 }
 
-impl<'a> RaylibRenderer<'a> {
+impl<'a> Renderer<'a> {
     /// thickness for debug polygon lines
     const DEBUG_THICKNESS: f32 = 1.0;
 
@@ -1273,7 +1273,7 @@ impl<'a> RaylibRenderer<'a> {
     }
 }
 
-impl<'a> IRenderer for RaylibRenderer<'a> {
+impl<'a> IRenderer for Renderer<'a> {
     type Texture = RenderTexture2D;
     type Font = Font;
     type Color = Color;
@@ -1362,7 +1362,7 @@ impl<'a> IRenderer for RaylibRenderer<'a> {
 }
 
 #[derive(Debug)]
-pub struct RaylibPlatform {
+pub struct Platform {
     rl: RaylibHandle,
     thread: RaylibThread,
     draw_layer_pool: Vec<RenderTexture2D>,
@@ -1370,7 +1370,7 @@ pub struct RaylibPlatform {
     secs_since_cursor_moved: f32,
 }
 
-impl RaylibPlatform {
+impl Platform {
     /// instantiates the new platform assuming the given board dimensions
     pub fn new(board_dimensions: Vector2) -> Self {
         callbacks::set_trace_log_callback(|level, msg| match level {
@@ -1412,16 +1412,16 @@ impl RaylibPlatform {
     }
 }
 
-impl IPlatform for RaylibPlatform {
+impl IPlatform for Platform {
     type Texture = RenderTexture2D;
     type Font = Font;
     type Color = Color;
     type Rectangle = Rectangle;
     type Vector2 = Vector2;
     type ConvexShape = ConvexHull<Vector2>;
-    type KeyboardReader<'a> = RaylibKeyboardReader<'a>;
-    type Renderer<'a> = RaylibRenderer<'a>;
-    type TextureCompiler<'a> = RaylibTextureCompiler<'a>;
+    type KeyboardReader<'a> = KeyboardReader<'a>;
+    type Renderer<'a> = Renderer<'a>;
+    type TextureCompiler<'a> = TextureCompiler<'a>;
 
     fn should_close(&mut self) -> bool {
         self.rl.window_should_close()
@@ -1432,7 +1432,7 @@ impl IPlatform for RaylibPlatform {
     }
 
     fn renderer(&mut self) -> Self::Renderer<'_> {
-        RaylibRenderer {
+        Renderer {
             rl: &mut self.rl,
             thread: &self.thread,
             draw_layer_pool: &mut self.draw_layer_pool,
@@ -1442,13 +1442,13 @@ impl IPlatform for RaylibPlatform {
     }
 
     fn texture_compiler(&mut self) -> Self::TextureCompiler<'_> {
-        RaylibTextureCompiler {
+        TextureCompiler {
             rl: &mut self.rl,
             thread: &self.thread,
         }
     }
 
     fn keyboard_reader(&mut self) -> Self::KeyboardReader<'_> {
-        RaylibKeyboardReader { rl: &mut self.rl }
+        KeyboardReader { rl: &mut self.rl }
     }
 }

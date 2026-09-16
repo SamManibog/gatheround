@@ -1,58 +1,19 @@
 use std::{fmt::Debug, path::Path};
 
 use crate::{
-    assets,
+    app::GlobalAssets,
     board::BoardManager,
     cheat_buffer::CheatBuffer,
-    utils::color::IColor,
-    utils::geometry::{IConvexShape, IRect, IVec2},
     intermediate_representations::VisualInfo,
     lua::FromLuaTable,
     resources::{TextureInfo, VisualComponentProvider},
+    utils::{
+        color::IColor,
+        geometry::{IConvexShape, IRect, IVec2},
+    },
 };
 
-#[derive(Debug)]
-pub struct GlobalAssets<T, F> {
-    pub open_hand_texture: T,
-    pub closed_hand_texture: T,
-    pub cheat_buffer_font: F,
-}
-
-impl<T: 'static, F: 'static> GlobalAssets<T, F> {
-    pub const CHEAT_BUFFER_FONT_SIZE: f32 = 28.0;
-
-    pub fn new<R: ITextureCompiler<Texture = T, Font = F>>(compiler: &mut R) -> Self {
-        let open_hand_texture = match compiler
-            .load_texture_from_memory(assets::OPEN_HAND.filetype, assets::OPEN_HAND.data)
-        {
-            Ok(t) => t,
-            Err(msg) => panic!("Unable to load open hand texture: {msg}"),
-        };
-        let closed_hand_texture = match compiler
-            .load_texture_from_memory(assets::CLOSED_HAND.filetype, assets::CLOSED_HAND.data)
-        {
-            Ok(t) => t,
-            Err(msg) => panic!("Unable to load open hand texture: {msg}"),
-        };
-
-        let font_data = assets::JETBRAINS_MONO;
-        let cheat_buffer_font = match compiler.load_font_from_memory(
-            font_data.filetype,
-            font_data.data,
-            Self::CHEAT_BUFFER_FONT_SIZE as u32,
-            assets::ASCII_GRAPHIC_CHARSET,
-        ) {
-            Ok(t) => t,
-            Err(msg) => panic!("Unable to load open hand texture: {msg}"),
-        };
-
-        Self {
-            open_hand_texture,
-            closed_hand_texture,
-            cheat_buffer_font,
-        }
-    }
-}
+pub mod raylib;
 
 pub trait ITextureCompiler {
     type Texture: 'static;
