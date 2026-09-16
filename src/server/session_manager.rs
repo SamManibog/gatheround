@@ -6,7 +6,7 @@ use rand::Rng;
 use serde::Serialize;
 use tokio::{self, sync::oneshot};
 
-use crate::{resources::PlayerColor, server::PlayerEvent, utils::ecs::DenseComponentManager};
+use crate::{board::players::PlayerColor, server::PlayerEvent, utils::ecs::DenseComponentManager};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SessionToken([u8; Self::LENGTH]);

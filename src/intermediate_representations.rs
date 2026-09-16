@@ -3,14 +3,10 @@ use std::fmt::Debug;
 use mlua::{Table, Value};
 
 use crate::{
-    utils::color::{IColor, color_from_lua_value},
-    utils::ecs::EntityTrait,
-    utils::geometry::{
+    board::collisions::CollisionShapeEntity, lua::{FromLuaTable, FromLuaValue, finite_f32_from_lua_value, vector_from_lua_value}, utils::{color::{IColor, color_from_lua_value}, ecs::EntityTrait, geometry::{
         CollisionShape, IConvexShape, IRect, IVec2, RigidTransform, finite_vec2_from_lua_table,
         finite_vec2_from_lua_value, valid_finite_rect_from_lua_table,
-    },
-    lua::{FromLuaTable, FromLuaValue, finite_f32_from_lua_value, vector_from_lua_value},
-    resources::CollisionShapeEntity,
+    }}
 };
 
 /// a transform for an image, only covers offset and scale
@@ -590,13 +586,13 @@ impl<C: IColor, R: IRect, V: IVec2> FromLuaTable for PatternInfo<C, R, V> {
 
 /// a visual element on a piece face
 #[derive(Debug, Clone)]
-pub enum VisualComponent<C: IColor, R: IRect, V: IVec2> {
+pub enum TextureComponent<C: IColor, R: IRect, V: IVec2> {
     Textbox(Box<TextboxInfo<C, R>>),
     Image(Box<ImageInfo<C, R, V>>),
     Pattern(Box<PatternInfo<C, R, V>>),
 }
 
-impl<C: IColor, R: IRect, V: IVec2> FromLuaTable for VisualComponent<C, R, V> {
+impl<C: IColor, R: IRect, V: IVec2> FromLuaTable for TextureComponent<C, R, V> {
     fn try_from_lua_table(table: &Table) -> Result<Self, String> {
         match table.raw_get::<String>("type") {
             Ok(t) => {
@@ -629,44 +625,44 @@ impl<C: IColor, R: IRect, V: IVec2> FromLuaTable for VisualComponent<C, R, V> {
 
 /// information for a visual element on a piece face
 #[derive(Debug, Clone)]
-pub struct VisualInfo<C: IColor, R: IRect, V: IVec2> {
+pub struct TextureIR<C: IColor, R: IRect, V: IVec2> {
     /// the visual components for the piece, in order from bottom to top
-    pub components: Vec<VisualComponent<C, R, V>>,
+    pub components: Vec<TextureComponent<C, R, V>>,
 }
 
-impl<C: IColor, R: IRect, V: IVec2> From<VisualComponent<C, R, V>> for VisualInfo<C, R, V> {
-    fn from(value: VisualComponent<C, R, V>) -> Self {
+impl<C: IColor, R: IRect, V: IVec2> From<TextureComponent<C, R, V>> for TextureIR<C, R, V> {
+    fn from(value: TextureComponent<C, R, V>) -> Self {
         Self {
             components: vec![value],
         }
     }
 }
 
-impl<C: IColor, R: IRect, V: IVec2> From<TextboxInfo<C, R>> for VisualComponent<C, R, V> {
+impl<C: IColor, R: IRect, V: IVec2> From<TextboxInfo<C, R>> for TextureComponent<C, R, V> {
     fn from(value: TextboxInfo<C, R>) -> Self {
-        VisualComponent::Textbox(Box::new(value))
+        TextureComponent::Textbox(Box::new(value))
     }
 }
 
-impl<C: IColor, R: IRect, V: IVec2> From<ImageInfo<C, R, V>> for VisualComponent<C, R, V> {
+impl<C: IColor, R: IRect, V: IVec2> From<ImageInfo<C, R, V>> for TextureComponent<C, R, V> {
     fn from(value: ImageInfo<C, R, V>) -> Self {
-        VisualComponent::Image(Box::new(value))
+        TextureComponent::Image(Box::new(value))
     }
 }
 
-impl<C: IColor, R: IRect, V: IVec2> From<PatternInfo<C, R, V>> for VisualComponent<C, R, V> {
+impl<C: IColor, R: IRect, V: IVec2> From<PatternInfo<C, R, V>> for TextureComponent<C, R, V> {
     fn from(value: PatternInfo<C, R, V>) -> Self {
-        VisualComponent::Pattern(Box::new(value))
+        TextureComponent::Pattern(Box::new(value))
     }
 }
 
-impl<C: IColor, R: IRect, V: IVec2> Default for VisualInfo<C, R, V> {
+impl<C: IColor, R: IRect, V: IVec2> Default for TextureIR<C, R, V> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<C: IColor, R: IRect, V: IVec2> VisualInfo<C, R, V> {
+impl<C: IColor, R: IRect, V: IVec2> TextureIR<C, R, V> {
     pub fn new() -> Self {
         Self {
             components: Default::default(),
@@ -676,7 +672,7 @@ impl<C: IColor, R: IRect, V: IVec2> VisualInfo<C, R, V> {
     /// an iterator over all font names referenced in this visual
     pub fn font_iter(&self) -> impl Iterator<Item = &String> {
         self.components.iter().filter_map(|c| match c {
-            VisualComponent::Textbox(t) => Some(&t.font),
+            TextureComponent::Textbox(t) => Some(&t.font),
             _ => None,
         })
     }
@@ -684,19 +680,19 @@ impl<C: IColor, R: IRect, V: IVec2> VisualInfo<C, R, V> {
     /// an iterator over all images referenced in this visual
     pub fn image_iter(&self) -> impl Iterator<Item = &String> {
         self.components.iter().filter_map(|c| match c {
-            VisualComponent::Image(i) => Some(&i.path),
+            TextureComponent::Image(i) => Some(&i.path),
             _ => None,
         })
     }
 
     /// adds a component to the top of the visual
-    pub fn push_component(&mut self, component: VisualComponent<C, R, V>) {
+    pub fn push_component(&mut self, component: TextureComponent<C, R, V>) {
         self.components.push(component);
     }
 
     /// removes the component with the given index
     /// returns the removed name and component on success
-    pub fn remove(&mut self, index: usize) -> Option<VisualComponent<C, R, V>> {
+    pub fn remove(&mut self, index: usize) -> Option<TextureComponent<C, R, V>> {
         Some(self.components.remove(index))
     }
 
@@ -720,27 +716,27 @@ impl<C: IColor, R: IRect, V: IVec2> VisualInfo<C, R, V> {
     }
 
     /// gets a reference to a component
-    pub fn get_component(&self, index: usize) -> Option<&VisualComponent<C, R, V>> {
+    pub fn get_component(&self, index: usize) -> Option<&TextureComponent<C, R, V>> {
         self.components.get(index)
     }
 
     /// gets a mutable reference to a component
-    pub fn get_component_mut(&mut self, index: usize) -> Option<&mut VisualComponent<C, R, V>> {
+    pub fn get_component_mut(&mut self, index: usize) -> Option<&mut TextureComponent<C, R, V>> {
         self.components.get_mut(index)
     }
 
     // an iterator over components
-    pub fn components(&self) -> impl Iterator<Item = &VisualComponent<C, R, V>> {
+    pub fn components(&self) -> impl Iterator<Item = &TextureComponent<C, R, V>> {
         self.components.iter()
     }
 
     // an iterator over mutable component references
-    pub fn components_mut(&mut self) -> impl Iterator<Item = &mut VisualComponent<C, R, V>> {
+    pub fn components_mut(&mut self) -> impl Iterator<Item = &mut TextureComponent<C, R, V>> {
         self.components.iter_mut()
     }
 }
 
-impl<C: IColor, R: IRect, V: IVec2> FromLuaTable for VisualInfo<C, R, V> {
+impl<C: IColor, R: IRect, V: IVec2> FromLuaTable for TextureIR<C, R, V> {
     // attempts to create a component from a lua table
     // returns a string error message on failure
     fn try_from_lua_table(table: &Table) -> Result<Self, String> {
@@ -758,7 +754,7 @@ impl<C: IColor, R: IRect, V: IVec2> FromLuaTable for VisualInfo<C, R, V> {
             let unchecked_component = result.unwrap();
 
             let component =
-                match VisualComponent::<C, R, V>::try_from_lua_table(&unchecked_component) {
+                match TextureComponent::<C, R, V>::try_from_lua_table(&unchecked_component) {
                     Ok(c) => c,
                     Err(msg) => {
                         return Err(format!("Invalid component at index {}: {msg}", index + 1));
@@ -769,7 +765,7 @@ impl<C: IColor, R: IRect, V: IVec2> FromLuaTable for VisualInfo<C, R, V> {
         }
 
         if components.is_empty() {
-            match VisualComponent::try_from_lua_table(table) {
+            match TextureComponent::try_from_lua_table(table) {
                 Ok(component) => Ok(Self {
                     components: vec![component],
                 }),

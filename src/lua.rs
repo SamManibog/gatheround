@@ -15,9 +15,9 @@ use crate::{
         IConvexShape, IRect, IVec2, RigidTransform, finite_vec2_from_lua_table,
         finite_vec2_from_lua_value,
     },
-    intermediate_representations::{EntityIdentifier, PieceIR, PileIR, VisualInfo},
+    intermediate_representations::{EntityIdentifier, PieceIR, PileIR, TextureIR},
+    board::players::PlayerColor,
     platform::IPlatform,
-    resources::PlayerColor,
 };
 
 /// for structs that can be created based off of a lua table
@@ -190,7 +190,7 @@ pub fn get_lua_instance<
             }
 
             // try to parse the lua table
-            let result = VisualInfo::try_from_lua_table(&visual);
+            let result = TextureIR::try_from_lua_table(&visual);
             if let Err(msg) = result {
                 return Err(mlua::Error::RuntimeError(msg));
             }

@@ -9,16 +9,14 @@ use raylib::{
 };
 
 use crate::{
-    board::BoardManager,
+    board::{BoardManager, textures::{TextureComponentProvider, TextureInfo}},
     cheat_buffer::CheatBuffer,
-    utils::color::IColor,
-    utils::geometry::{ConvexHull, IConvexShape, IRect, IVec2},
     intermediate_representations::{
         Alignment, ImagePosition, ImageTransform, PatternInfo, PatternType, TextboxInfo,
-        VisualComponent, VisualInfo,
+        TextureComponent, TextureIR,
     },
     platform::{GlobalAssets, IKeyboardReader, IPlatform, IRenderer, ITextureCompiler},
-    resources::{TextureInfo, VisualComponentProvider},
+    utils::{color::IColor, geometry::{ConvexHull, IConvexShape, IRect, IVec2}},
 };
 
 const TARGET_FRAME_RATE: u32 = 60;
@@ -189,7 +187,7 @@ impl<'a> TextureCompiler<'a> {
     fn draw_textbox(
         &mut self,
         textbox: &TextboxInfo<Color, Rectangle>,
-        visual_component_provider: &mut VisualComponentProvider<'_, Font, RenderTexture2D>,
+        visual_component_provider: &mut TextureComponentProvider<'_, Font, RenderTexture2D>,
         transform: &ImageTransform<Vector2>,
         target: &mut RenderTexture2D,
     ) {
@@ -652,9 +650,9 @@ impl<'a> ITextureCompiler for TextureCompiler<'a> {
 
     fn compile_visual(
         &mut self,
-        visual: &VisualInfo<Color, Rectangle, Vector2>,
+        visual: &TextureIR<Color, Rectangle, Vector2>,
         magnification_dimensions: Vector2,
-        mut visual_component_provider: VisualComponentProvider<'_, Self::Font, Self::Texture>,
+        mut visual_component_provider: TextureComponentProvider<'_, Self::Font, Self::Texture>,
     ) -> Result<TextureInfo<Self::Texture>, String> {
         // determine the bounds for the original image
         let (render_dimensions, render_offset) = {
@@ -662,11 +660,11 @@ impl<'a> ITextureCompiler for TextureCompiler<'a> {
             let mut rect = Rectangle::new(0.0, 0.0, 0.0, 0.0);
             for component in visual.components() {
                 match component {
-                    VisualComponent::Textbox(t) => {
+                    TextureComponent::Textbox(t) => {
                         rect = rect.bounding(&t.rect);
                     }
 
-                    VisualComponent::Image(i) => match i.position_data {
+                    TextureComponent::Image(i) => match i.position_data {
                         ImagePosition::FitRect(r) => rect = rect.bounding(&r),
                         ImagePosition::Transform(transform) => {
                             if let Some(image_texture) =
@@ -686,7 +684,7 @@ impl<'a> ITextureCompiler for TextureCompiler<'a> {
                         }
                     },
 
-                    VisualComponent::Pattern(p) => rect = rect.bounding(&p.rect),
+                    TextureComponent::Pattern(p) => rect = rect.bounding(&p.rect),
                 }
             }
 
@@ -714,7 +712,10 @@ impl<'a> ITextureCompiler for TextureCompiler<'a> {
             .rl
             .load_render_texture(&self.thread, width, height)
             .expect("Could not create render texture.");
-        self.rl.draw_texture_mode(&self.thread, &mut texture, |mut p| p.clear_background(Color::BLANK));
+        self.rl
+            .draw_texture_mode(&self.thread, &mut texture, |mut p| {
+                p.clear_background(Color::BLANK)
+            });
 
         let texture_transform = ImageTransform::<Vector2> {
             position: render_offset,
@@ -737,7 +738,10 @@ impl<'a> ITextureCompiler for TextureCompiler<'a> {
             .rl
             .load_render_texture(&self.thread, mangnified_width, magnified_height)
             .expect("Could not create magnified render texture.");
-        self.rl.draw_texture_mode(&self.thread, &mut texture_magnified, |mut p| p.clear_background(Color::BLANK));
+        self.rl
+            .draw_texture_mode(&self.thread, &mut texture_magnified, |mut p| {
+                p.clear_background(Color::BLANK)
+            });
 
         let magnified_transform = ImageTransform::<Vector2> {
             position: render_offset.scale(magnification),
@@ -747,7 +751,7 @@ impl<'a> ITextureCompiler for TextureCompiler<'a> {
         // draw visuals onto the render texture
         for component in visual.components() {
             match component {
-                VisualComponent::Textbox(t) => {
+                TextureComponent::Textbox(t) => {
                     self.draw_textbox(
                         t,
                         &mut visual_component_provider,
@@ -762,7 +766,7 @@ impl<'a> ITextureCompiler for TextureCompiler<'a> {
                     );
                 }
 
-                VisualComponent::Image(i) => {
+                TextureComponent::Image(i) => {
                     if let Some(image) = visual_component_provider.get_or_load_image(self, &i.path)
                     {
                         self.draw_texture(
@@ -780,7 +784,7 @@ impl<'a> ITextureCompiler for TextureCompiler<'a> {
                     }
                 }
 
-                VisualComponent::Pattern(p) => {
+                TextureComponent::Pattern(p) => {
                     self.draw_pattern(p, &texture_transform, &mut texture);
                     self.draw_pattern(p, &magnified_transform, &mut texture_magnified);
                 }

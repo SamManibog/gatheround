@@ -1,8 +1,7 @@
 use std::{collections::HashSet, path::PathBuf};
 
 use crate::{
-    resources::PlayerColor, utils::color::IColor, utils::ecs::DenseComponentManager,
-    utils::geometry::IVec2,
+    board::players::PlayerColor, utils::{color::IColor, ecs::DenseComponentManager, geometry::IVec2}
 };
 use mlua::Lua;
 use rand::{rngs::ThreadRng, seq::SliceRandom};

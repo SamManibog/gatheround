@@ -4,13 +4,20 @@ use std::sync::{
 };
 
 use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
-use axum_extra::extract::{CookieJar, cookie::{Cookie, SameSite}};
+use axum_extra::extract::{
+    CookieJar,
+    cookie::{Cookie, SameSite},
+};
 use serde::Deserialize;
 use time::Duration;
 use tokio::task::JoinHandle;
 use tower_http::services::ServeDir;
 
-use crate::{input::{DeserializableInputEvent, InputEvent, PlayerInputEvent}, resources::PlayerColor, server::{InvalidSessionError, NewSessionError, SessionManager, SessionToken}};
+use crate::{
+    board::players::PlayerColor,
+    input::{DeserializableInputEvent, InputEvent, PlayerInputEvent},
+    server::{InvalidSessionError, NewSessionError, SessionManager, SessionToken},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrivateHostCommand {

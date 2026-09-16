@@ -2,11 +2,10 @@ use std::{fmt::Debug, path::Path};
 
 use crate::{
     app::GlobalAssets,
-    board::BoardManager,
+    board::{BoardManager, textures::{TextureInfo, TextureComponentProvider}},
     cheat_buffer::CheatBuffer,
-    intermediate_representations::VisualInfo,
+    intermediate_representations::TextureIR,
     lua::FromLuaTable,
-    resources::{TextureInfo, VisualComponentProvider},
     utils::{
         color::IColor,
         geometry::{IConvexShape, IRect, IVec2},
@@ -27,9 +26,9 @@ pub trait ITextureCompiler {
     /// but may panic if a name not in the provided visual info is used
     fn compile_visual(
         &mut self,
-        visual: &VisualInfo<Self::Color, Self::Rectangle, Self::Vector2>,
+        visual: &TextureIR<Self::Color, Self::Rectangle, Self::Vector2>,
         magnification_dimensions: Self::Vector2,
-        visual_component_provider: VisualComponentProvider<'_, Self::Font, Self::Texture>,
+        visual_component_provider: TextureComponentProvider<'_, Self::Font, Self::Texture>,
     ) -> Result<TextureInfo<Self::Texture>, String>;
 
     /// loads a font into an acceptable format, given a path to its font file

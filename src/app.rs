@@ -3,7 +3,18 @@ use std::{cell::RefCell, fmt::Debug, path::PathBuf, rc::Rc};
 use mlua::{Lua, MultiValue};
 
 use crate::{
-    assets, board::BoardManager, cheat_buffer::CheatBuffer, game::{self}, input::InputState, lua::{FromLuaTable, get_lua_instance}, platform::{IPlatform, IRenderer, ITextureCompiler}, resources::PlayerColor, server::{GameServer, HostCommand, PlayerEvent}, utils::{color::IColor, geometry::{IConvexShape, IRect, IVec2}}
+    assets,
+    board::{BoardManager, players::PlayerColor},
+    cheat_buffer::CheatBuffer,
+    game::{self},
+    input::InputState,
+    lua::{FromLuaTable, get_lua_instance},
+    platform::{IPlatform, IRenderer, ITextureCompiler},
+    server::{GameServer, HostCommand, PlayerEvent},
+    utils::{
+        color::IColor,
+        geometry::{IConvexShape, IRect, IVec2},
+    },
 };
 
 #[derive(Debug)]
@@ -74,7 +85,6 @@ impl<T: 'static, F: 'static> GlobalAssets<T, F> {
         }
     }
 }
-
 
 #[derive(Debug)]
 pub struct AppState<
