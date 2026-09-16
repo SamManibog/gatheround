@@ -7,14 +7,34 @@ use std::{
 use mlua::Lua;
 
 use crate::{
-    app::GlobalAssets, board::{collisions::{CollisionLayerEntity, CollisionLayerManager, CollisionShapeEntity, PieceCollider, QuadTreeManager}, draw_layers::DrawLayerManager, piles::PileManager, players::{PlayerColor, PlayerManager}, snapping::SnapTargetManager, tags::TagManager, textures::{TextureEntity, TextureManager}}, game::GameEntry, input::{InputEvent, PlayerInputEvent}, intermediate_representations::{
-        CollisionShapeIR, EntityIdentifier, ImageInfo, ImagePosition, PatternInfo, PatternType,
-        PieceColliderIR, PieceIR, PileIR, TextboxInfo, TextureComponent, TextureIR,
-    }, lua::FromLuaTable, platform::ITextureCompiler, utils::{color::IColor, ecs::{
-        DenseComponentManager, DenseSet, Entity, EntityTrait, NamedEntityManager, ResourceManager, SparseSet
-    }, geometry::{
-        self, CollisionShape, IConvexShape, IRect, IVec2, NumericF32, RigidTransform,
-    }}
+    app::GlobalAssets,
+    board::{
+        collisions::{
+            CollisionLayerEntity, CollisionLayerManager, CollisionShapeEntity, PieceCollider,
+            QuadTreeManager,
+        },
+        draw_layers::DrawLayerManager,
+        irs::{
+            CollisionShapeIR, EntityIdentifier, ImageInfo, ImagePosition, PatternInfo, PatternType, PieceColliderIR, PieceIR, PileIR, TextAlign, TextboxInfo, TextureComponent, TextureIR
+        },
+        piles::PileManager,
+        players::{PlayerColor, PlayerManager},
+        snapping::SnapTargetManager,
+        tags::TagManager,
+        textures::{TextureEntity, TextureManager},
+    },
+    game::GameEntry,
+    input::{InputEvent, PlayerInputEvent},
+    lua::FromLuaTable,
+    platform::ITextureCompiler,
+    utils::{
+        color::IColor,
+        ecs::{
+            DenseComponentManager, DenseSet, Entity, EntityTrait, NamedEntityManager,
+            ResourceManager, SparseSet,
+        },
+        geometry::{self, CollisionShape, IConvexShape, IRect, IVec2, NumericF32, RigidTransform},
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -2125,7 +2145,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
         let title_ir: TextureIR<C, R, V> = TextureIR::from(TextureComponent::from(TextboxInfo {
             rect: title_rect.with_position(V::origin()),
             text: format!("Waiting for players to join..."),
-            align: crate::intermediate_representations::TextAlign::CenterCenter,
+            align: TextAlign::CenterCenter,
             spacing: None,
             size: None,
             font: String::from("ptserif-bold.ttf"),
@@ -2157,7 +2177,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
                 text: format!(
                     "1) Connect to this device's hotspot\n\n2) Open your web browser\n\n3) In the address bar, enter\n     the following URL:\n     {url}\n\n4) Select a color to play as\n\n 5) Use your screen as a touchpad"
                 ),
-                align: crate::intermediate_representations::TextAlign::TopLeft,
+                align: TextAlign::TopLeft,
                 spacing: None,
                 size: None,
                 font: String::from("ptserif-bold.ttf"),
@@ -2188,7 +2208,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
             TextureIR::from(TextureComponent::from(TextboxInfo {
                 rect: remaining_colors_rect.with_position(V::origin()),
                 text: format!("Colors remaining:"),
-                align: crate::intermediate_representations::TextAlign::TopCenter,
+                align: TextAlign::TopCenter,
                 spacing: None,
                 size: None,
                 font: String::from("ptserif-bold.ttf"),
@@ -2321,7 +2341,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
             components: vec![
                 PatternInfo {
                     rect: R::from_center_dimension(V::origin(), dimensions),
-                    pattern: crate::intermediate_representations::PatternType::Solid,
+                    pattern: PatternType::Solid,
                     weight: 1.0,
                     spacing: 0.0,
                     angle: 0.0,
@@ -2332,7 +2352,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
                 .into(),
                 PatternInfo {
                     rect: R::from_center_dimension(V::origin(), dimensions).expand(-2.0),
-                    pattern: crate::intermediate_representations::PatternType::Solid,
+                    pattern: PatternType::Solid,
                     weight: 1.0,
                     spacing: 0.0,
                     angle: 0.0,
@@ -2509,7 +2529,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
                     ),
                     text: String::from("Select a Game"),
                     font: String::from("ptserif.ttf"),
-                    align: crate::intermediate_representations::TextAlign::CenterCenter,
+                    align: TextAlign::CenterCenter,
                     size: None,
                     spacing: None,
                     color: C::try_from_hex_str("000000").unwrap(),
@@ -2765,7 +2785,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
         let background_ir: TextureIR<C, R, V> =
             TextureIR::from(TextureComponent::from(PatternInfo {
                 rect: board_rect.with_center(V::origin()),
-                pattern: crate::intermediate_representations::PatternType::Checkers,
+                pattern: PatternType::Checkers,
                 pattern_color: C::try_from_hex_str("E8E8E8").unwrap(),
                 background_color: C::try_from_hex_str("E0E0E0").unwrap(),
                 offset: V::origin(),
@@ -2853,7 +2873,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
                 rect: title_rect,
                 text: entry.title.clone(),
                 font: String::from("ptserif.ttf"),
-                align: crate::intermediate_representations::TextAlign::CenterCenter,
+                align: TextAlign::CenterCenter,
                 size: None,
                 spacing: None,
                 color: C::try_from_hex_str("000000").unwrap(),

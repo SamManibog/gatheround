@@ -9,14 +9,11 @@ use std::{
 use roaring::RoaringBitmap;
 
 use crate::{
-    assets::{self, BuiltinFontData},
-    intermediate_representations::TextureIR,
-    platform::ITextureCompiler,
-    utils::{
+    assets::{self, BuiltinFontData}, board::irs::TextureIR, platform::ITextureCompiler, utils::{
         color::IColor,
         ecs::{Entity, ResourceManager},
         geometry::{IRect, IVec2},
-    },
+    }
 };
 
 #[cfg(target_os = "windows")]

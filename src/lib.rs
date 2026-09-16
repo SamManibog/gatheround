@@ -1,6 +1,5 @@
-pub mod intermediate_representations;
-pub mod board;
 pub mod app;
+pub mod board;
 pub mod game;
 pub mod platform;
 pub mod lua;

@@ -8,16 +8,18 @@ use std::{
 use mlua::{Lua, LuaOptions, StdLib, Table, Value};
 
 use crate::{
-    board::BoardManager,
+    board::{
+        BoardManager,
+        irs::{EntityIdentifier, PieceIR, PileIR, TextureIR},
+        players::PlayerColor,
+    },
+    platform::IPlatform,
     utils::color::{IColor, color_from_lua_value},
     utils::ecs::EntityTrait,
     utils::geometry::{
         IConvexShape, IRect, IVec2, RigidTransform, finite_vec2_from_lua_table,
         finite_vec2_from_lua_value,
     },
-    intermediate_representations::{EntityIdentifier, PieceIR, PileIR, TextureIR},
-    board::players::PlayerColor,
-    platform::IPlatform,
 };
 
 /// for structs that can be created based off of a lua table
@@ -201,7 +203,8 @@ pub fn get_lua_instance<
                 .try_borrow_mut()
                 .expect("platform is already borrowed");
             let mut texture_compiler = platform.texture_compiler();
-            let texture_result = board.create_texture(&project_path, Some(name), &visual, &mut texture_compiler);
+            let texture_result =
+                board.create_texture(&project_path, Some(name), &visual, &mut texture_compiler);
 
             match texture_result {
                 Ok(_) => Ok(()),

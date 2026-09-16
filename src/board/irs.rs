@@ -3,10 +3,16 @@ use std::fmt::Debug;
 use mlua::{Table, Value};
 
 use crate::{
-    board::collisions::CollisionShapeEntity, lua::{FromLuaTable, FromLuaValue, finite_f32_from_lua_value, vector_from_lua_value}, utils::{color::{IColor, color_from_lua_value}, ecs::EntityTrait, geometry::{
-        CollisionShape, IConvexShape, IRect, IVec2, RigidTransform, finite_vec2_from_lua_table,
-        finite_vec2_from_lua_value, valid_finite_rect_from_lua_table,
-    }}
+    board::collisions::CollisionShapeEntity,
+    lua::{FromLuaTable, FromLuaValue, finite_f32_from_lua_value, vector_from_lua_value},
+    utils::{
+        color::{IColor, color_from_lua_value},
+        ecs::EntityTrait,
+        geometry::{
+            CollisionShape, IConvexShape, IRect, IVec2, RigidTransform, finite_vec2_from_lua_table,
+            finite_vec2_from_lua_value, valid_finite_rect_from_lua_table,
+        },
+    },
 };
 
 /// a transform for an image, only covers offset and scale

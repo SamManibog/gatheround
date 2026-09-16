@@ -9,14 +9,20 @@ use raylib::{
 };
 
 use crate::{
-    board::{BoardManager, textures::{TextureComponentProvider, TextureInfo}},
-    cheat_buffer::CheatBuffer,
-    intermediate_representations::{
-        Alignment, ImagePosition, ImageTransform, PatternInfo, PatternType, TextboxInfo,
-        TextureComponent, TextureIR,
+    board::{
+        BoardManager,
+        irs::{
+            Alignment, ImagePosition, ImageTransform, PatternInfo, PatternType, TextboxInfo,
+            TextureComponent, TextureIR,
+        },
+        textures::{TextureComponentProvider, TextureInfo},
     },
+    cheat_buffer::CheatBuffer,
     platform::{GlobalAssets, IKeyboardReader, IPlatform, IRenderer, ITextureCompiler},
-    utils::{color::IColor, geometry::{ConvexHull, IConvexShape, IRect, IVec2}},
+    utils::{
+        color::IColor,
+        geometry::{ConvexHull, IConvexShape, IRect, IVec2},
+    },
 };
 
 const TARGET_FRAME_RATE: u32 = 60;

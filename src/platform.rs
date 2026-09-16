@@ -2,9 +2,12 @@ use std::{fmt::Debug, path::Path};
 
 use crate::{
     app::GlobalAssets,
-    board::{BoardManager, textures::{TextureInfo, TextureComponentProvider}},
+    board::{
+        BoardManager,
+        irs::TextureIR,
+        textures::{TextureComponentProvider, TextureInfo},
+    },
     cheat_buffer::CheatBuffer,
-    intermediate_representations::TextureIR,
     lua::FromLuaTable,
     utils::{
         color::IColor,

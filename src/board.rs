@@ -8,6 +8,7 @@ pub mod tags;
 pub mod draw_layers;
 pub mod players;
 pub mod snapping;
+pub mod irs;
 
 pub mod quadtree;
 pub use quadtree::QuadTree;
