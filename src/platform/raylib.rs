@@ -1384,7 +1384,7 @@ impl Platform {
     /// instantiates the new platform assuming the given board dimensions
     pub fn new(board_dimensions: Vector2) -> Self {
         callbacks::set_trace_log_callback(|level, msg| match level {
-            TraceLogLevel::LOG_WARNING => println!("{msg}"),
+            //TraceLogLevel::LOG_WARNING => println!("{msg}"),
             TraceLogLevel::LOG_ERROR => eprintln!("{msg}"),
             TraceLogLevel::LOG_FATAL => eprintln!("{msg}"),
             _ => (),

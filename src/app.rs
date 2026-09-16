@@ -204,11 +204,7 @@ impl<
         board.reset();
         board.lobby_mode(
             &mut self.platform_cell.borrow_mut().texture_compiler(),
-            &format!(
-                "{}{}",
-                self.settings.ip_address,
-                GameServer::CONTROLLER_PATH
-            ),
+            &format!("{}{}", self.settings.ip_address, GameServer::PLAYER_PATH),
         );
 
         // clear lua state
@@ -351,15 +347,24 @@ impl<
         let cmds: Vec<HostCommand> = self.server.poll_host_commands().collect();
         for cmd in cmds {
             match cmd {
-                HostCommand::EnterGameSelectionMode => {
+                HostCommand::EnterGameSelector => {
                     let has_sufficient_players = self.board_cell.borrow_mut().player_count() >= 1;
                     if !self.board_mode.is_selector_mode() && has_sufficient_players {
                         self.start_game_selector();
                     }
                 }
-                HostCommand::EnterLobbyMode => {
+                HostCommand::EnterLobby => {
                     if !self.board_mode.is_lobby_mode() {
                         self.start_lobby();
+                    }
+                }
+                HostCommand::KickPlayer(color) => {
+                    if self.board_mode.is_lobby_mode() {
+                        let mut board = self.board_cell.borrow_mut();
+                        if board.is_playing(color) {
+                            board.remove_player(color);
+                            self.server.kick_player(color);
+                        }
                     }
                 }
             }

@@ -9,11 +9,19 @@ function applyCooldown(element) {
     }, 1000);
 }
 
-document.getElementById("openLobbyButton").addEventListener("click", async (e) => {
-    applyCooldown(e.target);
+const openLobbyButton = document.getElementById("openLobbyButton")
+openLobbyButton.addEventListener("click", async (e) => {
+    applyCooldown(openGameSelectorButton);
+    applyCooldown(openLobbyButton);
 
-    const response = await fetch('/games/host/start-lobby', {
+    const response = await fetch('/games/host-api', {
         method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            start_lobby: true,
+        })
     });
 
     if (!response.ok) {
@@ -21,10 +29,19 @@ document.getElementById("openLobbyButton").addEventListener("click", async (e) =
     }
 })
 
-document.getElementById("openGameSelectorButton").addEventListener("click", async (e) => {
-    applyCooldown(e.target);
-    const response = await fetch('/games/host/select-game', {
+const openGameSelectorButton = document.getElementById("openGameSelectorButton")
+openGameSelectorButton.addEventListener("click", async (e) => {
+    applyCooldown(openGameSelectorButton);
+    applyCooldown(openLobbyButton);
+
+    const response = await fetch('/games/host-api', {
         method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            start_game_selector: true
+        })
     });
 
     if (!response.ok) {
@@ -32,20 +49,33 @@ document.getElementById("openGameSelectorButton").addEventListener("click", asyn
     }
 })
 
-async function isHost() {
-    const host_response = await fetch('/games/host/is-host', {
-        method: "POST",
-    });
+let continueHostLoop = true;
+async function initHostState() {
+    const state_response = await fetch("/games/host-state", {
+        method: "POST"
+    })
 
-    let host_text = await host_response.text();
-    if (!host_response.ok) {
-        console.error(`ERROR [${host_response.status}]: ${host_text}`);
-    }
-    if (host_text == "true") {
-        return true;
-    }
+    console.log("TODO: init state, got: ", await state_response.text());
 
-    const claim_response = await fetch('/games/host/claim', {
+    continueHostLoop = true;
+    handleHostEvents();
+}
+
+async function handleHostEvents() {
+    const event_response = await fetch("/games/host-events", {
+        method: "POST"
+    })
+
+    console.log("TODO: handle events, got: ", await event_response.text());
+
+    // call again to perpetuate loop
+    if (continueHostLoop) {
+        handleHostEvents();
+    }
+}
+
+async function claimHost() {
+    const claim_response = await fetch('/games/claim-host', {
         method: "POST",
     });
 
@@ -56,8 +86,9 @@ async function isHost() {
     return true;
 }
 
-isHost().then((successful_claim) => {
+claimHost().then(async (successful_claim) => {
     if (successful_claim) {
-        body.classList.remove("hidden")
+        body.classList.remove("hidden");
+        initHostState();
     }
 })

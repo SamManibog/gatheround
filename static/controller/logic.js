@@ -1,12 +1,17 @@
 // -----------------------------------------------------------------------------------------------------------
 // MAIN PAGE ELEMENTS
 // -----------------------------------------------------------------------------------------------------------
-const joinPage = document.getElementById('joinPage');
-const inputPage = document.getElementById('inputPage');
+function focusPage(page_name) {
+    const pages = {
+        joinsDisabledPage: document.getElementById('joinsDisabledPage'),
+        joinPage: document.getElementById('joinPage'),
+        inputPage: document.getElementById('inputPage'),
+    };
 
-function attemptReconnect() {
-    inputPage.classList.add("hidden");
-    joinPage.classList.remove("hidden");
+    for (const page in pages) {
+        pages[page].classList.add("hidden");
+    }
+    pages[page_name].classList.remove("hidden");
 }
 
 // -----------------------------------------------------------------------------------------------------------
@@ -17,7 +22,7 @@ const trackpadArea = document.getElementById('trackpad');
 const threshold = 10; // Pixels moved to count as a drag instead of a tap
 
 async function sendTrackpadDelta(x, y) {
-    const response = await fetch('/games/input', {
+    const response = await fetch('/games/player-api', {
         method: "POST",
         headers: {
             "Content-Type": "application/json"
@@ -35,7 +40,7 @@ async function sendTrackpadDelta(x, y) {
 }
 
 async function sendTrackpadPress() {
-    const response = await fetch('/games/input', {
+    const response = await fetch('/games/player-api', {
         method: "POST",
         headers: {
             "Content-Type": "application/json"
@@ -124,16 +129,42 @@ trackpadArea.addEventListener('pointerup', (e) => {
     isDragging = false;
 });
 
+let continuePlayerLoop = true;
+async function initPlayerState() {
+    const state_response = await fetch("/games/player-state", {
+        method: "POST"
+    })
+
+    console.log("TODO: init player state, got: ", await state_response.text());
+
+    // begin player event loop
+    continueJoinLoop = false;
+    continuePlayerLoop = true;
+    handlePlayerEvents();
+}
+
+async function handlePlayerEvents() {
+    const event_response = await fetch("/games/player-events", {
+        method: "POST"
+    })
+
+    console.log("TODO: handle player events, got: ", await event_response.text());
+
+    // call again to perpetuate loop
+    if (continuePlayerLoop) {
+        handlePlayerEvents();
+    }
+}
+
 // -----------------------------------------------------------------------------------------------------------
 // JOIN PAGE LOGIC
 // -----------------------------------------------------------------------------------------------------------
 
 // handle color button logic
-let playerColor = null;
 let joinRequested = false;
 const colorButtons = document.querySelectorAll('.color-selector-button');
 async function handleColorButtonClick(event) {
-    if (joinRequested || playerColor != null) {
+    if (joinRequested) {
         return;
     }
 
@@ -141,7 +172,7 @@ async function handleColorButtonClick(event) {
     console.log("Attempting join as ", color);
 
     joinRequested = true;
-    const response = await fetch('/games/get-session', {
+    const response = await fetch('/games/claim-player', {
         method: "POST",
         headers: {
             "Content-Type": "application/json"
@@ -151,16 +182,14 @@ async function handleColorButtonClick(event) {
         })
     });
 
-    if (!response.ok) {
-        console.error(`ERROR [${response.status}]: ${await response.text()}`);
-        if (response.status == 401) {
-            attemptReconnect();
-        }
+    if (response.ok) {
+        enterPlayerMode();
     } else {
-        playerColor = color;
-        console.log("Game joined successfully as ", playerColor);
-        joinPage.classList.add("hidden");
-        inputPage.classList.remove("hidden");
+        if (response.status == 423) {
+            self.enterWaitMode();
+        } else {
+            console.error(`ERROR [${response.status}]: ${await response.text()}`);
+        }
     }
     joinRequested = false;
 }
@@ -168,28 +197,64 @@ colorButtons.forEach(button => {
     button.addEventListener('click', handleColorButtonClick);
 });
 
+let continueJoinLoop = true;
+async function initJoinState() {
+    const state_response = await fetch("/games/join-state", {
+        method: "POST"
+    })
+
+    console.log("TODO: init join state, got: ", await state_response.text());
+
+    // begin join event loop
+    continuePlayerLoop = false;
+    continueJoinLoop = true;
+    handleJoinEvents();
+}
+
+async function handleJoinEvents() {
+    const event_response = await fetch("/games/join-events", {
+        method: "POST"
+    })
+
+    console.log("TODO: handle join events, got: ", await event_response.text());
+
+    // call again to perpetuate loop
+    if (continueJoinLoop) {
+        handleJoinEvents();
+    }
+}
+
 // -----------------------------------------------------------------------------------------------------------
 // Reconnection logic
 // -----------------------------------------------------------------------------------------------------------
+async function enterPlayerMode() {
+    console.log("entered player mode");
+    focusPage("inputPage");
+}
 
-async function isPlayer() {
-    const response = await fetch('/games/is-player', {
+async function enterJoinMode() {
+    console.log("entered join mode");
+    focusPage("joinPage");
+}
+
+async function enterWaitMode() {
+    console.log("entered wait mode");
+    focusPage("joinsDisabledPage");
+}
+
+async function connect() {
+    const response = await fetch('/games/join', {
         method: "POST",
     });
 
-    let text = await response.text();
+    const response_text = await response.text();
 
-    if (!response.ok) {
-        console.error(`ERROR [${response.status}]: ${text}`);
-    }
-
-    return text == "true";
-}
-
-isPlayer().then((result) => {
-    if (result) {
-        inputPage.classList.remove("hidden");
+    if (response_text == "is player") {
+        enterPlayerMode();
+    } else if (response.ok) {
+        enterJoinMode();
     } else {
-        joinPage.classList.remove("hidden");
+        enterWaitMode();
     }
-});
+}
+connect()
