@@ -10,7 +10,7 @@ use crate::{
     input::InputState,
     lua::{FromLuaTable, get_lua_instance},
     platform::{IPlatform, IRenderer, ITextureCompiler},
-    server::{GameServer, HostCommand, PlayerEvent},
+    server::{GameServer, ServerEvent},
     utils::{
         color::IColor,
         geometry::{IConvexShape, IRect, IVec2},
@@ -125,12 +125,12 @@ impl<
     P: IPlatform<Texture = T, Font = F, Color = C, Rectangle = R, Vector2 = V, ConvexShape = S>,
 > AppState<C, R, V, S, T, F, P>
 {
-    pub async fn new_with_settings<G: FnOnce(&GameSettings<V>) -> P>(
+    pub fn new_with_settings<G: FnOnce(&GameSettings<V>) -> P>(
         settings: GameSettings<V>,
         platform_generator: G,
     ) -> Self {
         // initialize server
-        let server = GameServer::run_new(settings.ip_address.to_string()).await;
+        let server = GameServer::run_new(settings.ip_address.to_string());
 
         // initialize platform
         let mut platform = platform_generator(&settings);
@@ -258,19 +258,39 @@ impl<
         for _ in self.server.poll_inputs() {}
     }
 
-    // handle lobby-specific update functionality
+    // handle selector-specific update functionality
     fn update_selector_mode(&mut self) {
-        for player_event in self.server.poll_player_events() {
-            match player_event {
-                PlayerEvent::Joined(_) => (),
-                PlayerEvent::SetHost(player) => self.host_player = Some(player),
+        let mut kick_list = Vec::new();
+        let mut enter_lobby = false;
+        for event in self.server.poll_events() {
+            match event {
+                ServerEvent::EnterLobby => enter_lobby = true,
+                ServerEvent::EnterGameSelector => enter_lobby = false,
+                ServerEvent::SetHost(player) => self.host_player = Some(player),
+
+                // prevent new players from joining
+                ServerEvent::Joined(player) => kick_list.push(player),
+
+                // ignore kicking
+                ServerEvent::KickPlayer(_) => (),
+
             }
         }
 
-        let path_opt = self
-            .board_cell
-            .borrow_mut()
-            .selector_handle_inputs(self.server.poll_inputs());
+        if enter_lobby {
+            return self.start_lobby();
+        }
+
+        let path_opt = {
+            let mut board = self.board_cell.borrow_mut();
+            for player in kick_list {
+                board.remove_player(player);
+                self.server.kick_player(player);
+            }
+
+            board.selector_handle_inputs(self.server.poll_inputs())
+        };
+
         if let Some(path) = path_opt {
             self.start_game(path);
         }
@@ -278,15 +298,26 @@ impl<
 
     // handle lobby-specific update functionality
     fn update_lobby_mode(&mut self) {
-        for player_event in self.server.poll_player_events() {
-            match player_event {
-                PlayerEvent::Joined(player) => {
+        let mut kick_list = Vec::new();
+        let mut enter_selector = false;
+        for event in self.server.poll_events() {
+            match event {
+                ServerEvent::EnterLobby => enter_selector = false,
+                ServerEvent::EnterGameSelector => enter_selector = true,
+                ServerEvent::SetHost(player) => self.host_player = Some(player),
+                ServerEvent::KickPlayer(player) => kick_list.push(player),
+
+                ServerEvent::Joined(player) => {
                     self.board_cell.borrow_mut().lobby_add_player(player);
                     self.input_state.add_player(player);
                 }
 
-                PlayerEvent::SetHost(player) => self.host_player = Some(player),
+
             }
+        }
+
+        if enter_selector {
+            return self.start_game_selector();
         }
 
         self.board_cell
@@ -296,11 +327,29 @@ impl<
 
     // handle game-specific update functionality
     fn update_game_mode(&mut self) {
-        for player_event in self.server.poll_player_events() {
-            match player_event {
-                PlayerEvent::Joined(_) => (),
-                PlayerEvent::SetHost(player) => self.host_player = Some(player),
+        let mut kick_list = Vec::new();
+        let mut enter_lobby = false;
+        let mut enter_selector = false;
+        for event in self.server.poll_events() {
+            match event {
+                ServerEvent::EnterLobby => { enter_lobby = true; enter_selector = false; }
+                ServerEvent::EnterGameSelector => { enter_lobby = false; enter_selector = true }
+                ServerEvent::SetHost(player) => self.host_player = Some(player),
+
+                // prevent new players from joining
+                ServerEvent::Joined(player) => kick_list.push(player),
+
+                // ignore kicking
+                ServerEvent::KickPlayer(_) => (),
+
             }
+        }
+
+        if enter_lobby {
+            return self.start_lobby();
+        }
+        if enter_selector {
+            return self.start_game_selector();
         }
 
         let (lua, lua_update_callback) = match &mut self.board_mode {
@@ -341,33 +390,6 @@ impl<
     fn update(&mut self) -> bool {
         if self.platform_cell.borrow_mut().should_close() {
             return false;
-        }
-
-        // poll for host commands
-        let cmds: Vec<HostCommand> = self.server.poll_host_commands().collect();
-        for cmd in cmds {
-            match cmd {
-                HostCommand::EnterGameSelector => {
-                    let has_sufficient_players = self.board_cell.borrow_mut().player_count() >= 1;
-                    if !self.board_mode.is_selector_mode() && has_sufficient_players {
-                        self.start_game_selector();
-                    }
-                }
-                HostCommand::EnterLobby => {
-                    if !self.board_mode.is_lobby_mode() {
-                        self.start_lobby();
-                    }
-                }
-                HostCommand::KickPlayer(color) => {
-                    if self.board_mode.is_lobby_mode() {
-                        let mut board = self.board_cell.borrow_mut();
-                        if board.is_playing(color) {
-                            board.remove_player(color);
-                            self.server.kick_player(color);
-                        }
-                    }
-                }
-            }
         }
 
         match self.board_mode {

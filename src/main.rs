@@ -6,8 +6,7 @@ use gatheround::{
     utils::geometry::IVec2,
 };
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 8)]
-async fn main() {
+fn main() {
     type V = <raylib::Platform as IPlatform>::Vector2;
 
     let settings = GameSettings {
@@ -19,7 +18,7 @@ async fn main() {
     let platform_generator =
         |settings: &GameSettings<V>| raylib::Platform::new(settings.dimensions);
 
-    let mut app = AppState::new_with_settings(settings, platform_generator).await;
+    let mut app = AppState::new_with_settings(settings, platform_generator);
 
     app.run();
 }

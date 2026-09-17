@@ -54,7 +54,8 @@ openGameSelectorButton.addEventListener("click", async (e) => {
 let continueHostLoop = true;
 async function initHostState() {
     const state_response = await fetch("/games/host-state", {
-        method: "POST"
+        method: "POST",
+        credentials: 'include',
     })
 
     console.log("TODO: init state, got: ", await state_response.text());
@@ -65,7 +66,8 @@ async function initHostState() {
 
 async function handleHostEvents() {
     const event_response = await fetch("/games/host-events", {
-        method: "POST"
+        method: "POST",
+        credentials: 'include',
     })
 
     console.log("TODO: handle events, got: ", await event_response.text());

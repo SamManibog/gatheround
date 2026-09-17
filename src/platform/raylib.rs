@@ -1395,7 +1395,7 @@ impl Platform {
         let draw_layer_pool = Vec::new();
         let (mut rl, thread) = raylib::init()
             .always_run()
-            .vsync()
+            //.vsync()
             .title("Game Host")
             .size(
                 board_dimensions.x() as i32 / 2,
@@ -1405,7 +1405,7 @@ impl Platform {
             .resizable()
             .build();
         rl.set_exit_key(None);
-        rl.set_target_fps(TARGET_FRAME_RATE);
+        //rl.set_target_fps(TARGET_FRAME_RATE);
         let output_texture = rl
             .load_render_texture(
                 &thread,

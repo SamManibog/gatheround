@@ -3,6 +3,10 @@ name = "gatheround"
 version = "0.1.0"
 edition = "2024"
 
+[profile.release]
+debug = true
+strip = false
+
 [dependencies]
 axum = "0.8.9"
 axum-extra = { version = "0.12.6", features = ["cookie"] }
@@ -15,9 +19,11 @@ raylib = { version = "6.0.0", features = ["raygui"] }
 rcgen = "0.14.10"
 regex = "1.13.1"
 roaring = "0.11.5"
+rustls = { version = "0.23", features = ["aws-lc-rs"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 time = "0.3.55"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "sync"]}
 tower-cookies = "0.11.0"
 tower-http = { version = "0.7.1", features = ["fs"] }
+webrtc = "0.20.5"

@@ -7,13 +7,15 @@ use std::{
 use axum::http::StatusCode;
 use base64::Engine;
 use rand::Rng;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::{self, sync::oneshot};
 
-use crate::{board::players::PlayerColor, server::PlayerEvent, utils::ecs::DenseComponentManager};
+use crate::{
+    board::players::PlayerColor, input::{InputEvent, PlayerInputEvent}, utils::ecs::DenseComponentManager,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SubscriptionKind {
+pub enum SessionKind {
     NonPlayer,
     PlayerController,
     Host,
@@ -53,17 +55,64 @@ impl SessionToken {
     }
 }
 
-#[derive(Debug)]
-pub(super) enum InvalidSessionError {
-    DoesNotExist,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PrivateServerEvent {
+    HostConnected,
+    PublicEvent(ServerEvent),
 }
 
-impl Display for InvalidSessionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let message = match self {
-            Self::DoesNotExist => "Session token is invalid.",
-        };
-        write!(f, "{}", message)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerEvent {
+    EnterLobby,
+    EnterGameSelector,
+
+    SetHost(PlayerColor),
+    Joined(PlayerColor),
+    KickPlayer(PlayerColor),
+}
+
+impl From<ServerEvent> for PrivateServerEvent {
+    fn from(value: ServerEvent) -> Self {
+        Self::PublicEvent(value)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct DeserializablePlayerEntry {
+    /// the player's name
+    pub color: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct DeserializableHostEvent {
+    pub start_lobby: Option<bool>,
+    pub start_game_selector: Option<bool>,
+    pub kick_player: Option<String>,
+}
+
+impl TryInto<Vec<ServerEvent>> for &DeserializableHostEvent {
+    type Error = String;
+
+    fn try_into(self) -> Result<Vec<ServerEvent>, Self::Error> {
+        let mut vec = Vec::new();
+
+        if let Some(true) = self.start_lobby {
+            vec.push(ServerEvent::EnterLobby);
+        }
+
+        if let Some(true) = self.start_game_selector {
+            vec.push(ServerEvent::EnterGameSelector);
+        }
+
+        if let Some(color_str) = &self.kick_player {
+            if let Some(color) = PlayerColor::from_name(&color_str) {
+                vec.push(ServerEvent::KickPlayer(color));
+            } else {
+                return Err(format!("invalid color: {color_str}"));
+            }
+        }
+
+        Ok(vec)
     }
 }
 
@@ -193,10 +242,11 @@ struct NonPlayerStateResponse<'a> {
 }
 
 #[derive(Debug)]
-pub(super) struct SessionManager {
+pub(super) struct ServerState {
     host: Option<(SessionToken, SessionUpdateState)>,
 
-    player_event_sender: mpsc::Sender<PlayerEvent>,
+    input_sender: mpsc::Sender<PlayerInputEvent>,
+    event_sender: mpsc::Sender<PrivateServerEvent>,
 
     permanent_session_count: usize,
     session_states: HashMap<SessionToken, SessionState>,
@@ -206,15 +256,20 @@ pub(super) struct SessionManager {
     joins_blocked: bool,
 }
 
-impl SessionManager {
+impl ServerState {
     pub const NON_PLAYER_SESSION_MAX: usize = PlayerColor::COLOR_COUNT * 2;
 
-    pub fn new(player_event_sender: mpsc::Sender<PlayerEvent>) -> Self {
+    pub fn new(
+        input_sender: mpsc::Sender<PlayerInputEvent>,
+        event_sender: mpsc::Sender<PrivateServerEvent>,
+    ) -> Self {
         Self {
             host: None,
 
+            input_sender,
+            event_sender,
+
             permanent_session_count: 0,
-            player_event_sender,
             session_states: HashMap::with_capacity(PlayerColor::COLOR_COUNT),
             non_player_sessions: VecDeque::with_capacity(Self::NON_PLAYER_SESSION_MAX),
 
@@ -461,22 +516,22 @@ impl SessionManager {
     /// subscribe to a session dynamically
     pub fn subscribe_to_update(
         &mut self,
-        update_kind: SubscriptionKind,
+        session_kind: SessionKind,
         token: &SessionToken,
     ) -> Option<oneshot::Receiver<(StatusCode, String)>> {
-        match update_kind {
-            SubscriptionKind::NonPlayer => self.subscribe_to_non_player_update(token),
-            SubscriptionKind::PlayerController => self.subscribe_to_controller_update(token),
-            SubscriptionKind::Host => self.subscribe_to_host_update(token),
+        match session_kind {
+            SessionKind::NonPlayer => self.subscribe_to_non_player_update(token),
+            SessionKind::PlayerController => self.subscribe_to_controller_update(token),
+            SessionKind::Host => self.subscribe_to_host_update(token),
         }
     }
 
     /// send an update dynamically
-    pub fn send_state(&mut self, update_kind: SubscriptionKind, token: &SessionToken) {
+    pub fn send_state(&mut self, update_kind: SessionKind, token: &SessionToken) {
         match update_kind {
-            SubscriptionKind::NonPlayer => self.send_non_player_state(token),
-            SubscriptionKind::PlayerController => self.send_player_state(token),
-            SubscriptionKind::Host => self.send_host_state(),
+            SessionKind::NonPlayer => self.send_non_player_state(token),
+            SessionKind::PlayerController => self.send_player_state(token),
+            SessionKind::Host => self.send_host_state(),
         }
     }
 
@@ -589,7 +644,9 @@ impl SessionManager {
 
         match session {
             SessionState::Player(_) => return Err(NewPlayerError::IsAlreadyPlayer),
-            SessionState::NonPlayer(n) => n.try_complete(StatusCode::GONE, format!("upgraded to player")),
+            SessionState::NonPlayer(n) => {
+                n.try_complete(StatusCode::GONE, format!("upgraded to player"))
+            }
         };
 
         self.non_player_sessions.remove(
@@ -606,13 +663,13 @@ impl SessionManager {
             self.permanent_session_count += 1;
         }
 
-        self.player_event_sender
-            .send(PlayerEvent::Joined(color))
+        self.event_sender
+            .send(ServerEvent::Joined(color).into())
             .expect("Could not send new player to main thread.");
 
         if self.is_host(token) {
-            self.player_event_sender
-                .send(PlayerEvent::SetHost(color))
+            self.event_sender
+                .send(ServerEvent::SetHost(color).into())
                 .expect("Could not set host event to main thread.");
         }
 
@@ -634,25 +691,16 @@ impl SessionManager {
         Ok(())
     }
 
-    /// gets the player color associated with the given session
-    pub fn session_player_color(
-        &mut self,
-        token: &SessionToken,
-    ) -> Result<PlayerColor, InvalidSessionError> {
-        match self.session_states.get(token) {
-            Some(session) => match &session {
-                SessionState::Player(player) => Ok(player.color),
-                SessionState::NonPlayer(_) => Err(InvalidSessionError::DoesNotExist),
-            },
-            None => Err(InvalidSessionError::DoesNotExist),
-        }
-    }
-
     /// sets the host to the given token
     /// registering the new session if the token is not already in use
     pub fn set_host(&mut self, token: SessionToken) {
-        // reserve host's token
-        if !self.session_states.contains_key(&token) {
+        if let Some(session) = self.session_states.get(&token) {
+            let _ = match session {
+                SessionState::Player(p) => self.event_sender.send(ServerEvent::SetHost(p.color).into()),
+                _ => Ok(()),
+            };
+        } else {
+            // reserve host's token
             self.session_states.insert(
                 token.clone(),
                 SessionState::NonPlayer(SessionUpdateState::new()),
@@ -663,6 +711,8 @@ impl SessionManager {
 
         if let Some((_, mut update_state)) = self.host.take() {
             update_state.try_complete(StatusCode::FORBIDDEN, String::from("kicked"));
+        } else {
+            let _ = self.event_sender.send(PrivateServerEvent::HostConnected);
         }
 
         self.host = Some((token, SessionUpdateState::new()));
@@ -694,5 +744,40 @@ impl SessionManager {
 
             _ => unreachable!(),
         }
+    }
+
+    /// handles an input event for the given token
+    /// returns true on success and false on failure
+    /// fails only if the token is not a player
+    pub fn handle_input_event(&mut self, token: &SessionToken, event: InputEvent) -> bool {
+        let session = if let Some(s) = self.session_states.get(token) {
+            s
+        } else {
+            return false;
+        };
+
+        let player = if let SessionState::Player(p) = session {
+            p.color
+        } else {
+            return false;
+        };
+
+        let _ = self.input_sender.send(PlayerInputEvent { player, event });
+        true
+    }
+
+    /// handles a host command for the given token
+    /// returns true on success and false on failure
+    /// fails only if the token is not the host
+    pub fn handle_host_commands(&mut self, token: &SessionToken, commands: Vec<ServerEvent>) -> bool {
+        if !self.is_host(token) {
+            return false;
+        }
+
+        for cmd in commands {
+            let _ = self.event_sender.send(PrivateServerEvent::PublicEvent(cmd));
+        }
+
+        true
     }
 }
