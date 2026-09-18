@@ -4,7 +4,7 @@ use mlua::{Lua, MultiValue};
 
 use crate::{
     assets,
-    board::{BoardManager, irs::TextureIR, players::PlayerColor, textures::TextureEntity},
+    board::{BoardManager, players::PlayerColor},
     cheat_buffer::CheatBuffer,
     game::{self},
     input::InputState,

@@ -16,13 +16,10 @@ use crate::{
             TextureComponent, TextureIR,
         },
         textures::{TextureComponentProvider, TextureInfo},
-    },
-    cheat_buffer::CheatBuffer,
-    platform::{GlobalAssets, IKeyboardReader, IPlatform, IRenderer, ITextureCompiler},
-    utils::{
+    }, cheat_buffer::CheatBuffer, platform::{GlobalAssets, IKeyboardReader, IPlatform, IRenderer, ITextureCompiler}, profiling::Timer, utils::{
         color::IColor,
         geometry::{ConvexHull, IConvexShape, IRect, IVec2},
-    },
+    }
 };
 
 const TARGET_FRAME_RATE: u32 = 60;
@@ -1329,7 +1326,8 @@ impl<'a> IRenderer for Renderer<'a> {
         // draw to screen
         self.rl
             .draw_texture_mode(self.thread, self.output_texture, |mut painter| {
-                painter.clear_background(Color::BLANK);
+                painter.draw_fps(30, 30);
+                painter.clear_background(board.color);
             });
         Self::draw_board(
             self.rl,

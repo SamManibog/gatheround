@@ -15,7 +15,8 @@ use crate::{
         },
         draw_layers::DrawLayerManager,
         irs::{
-            CollisionShapeIR, EntityIdentifier, ImageInfo, ImagePosition, PatternInfo, PatternType, PieceColliderIR, PieceIR, PileIR, TextAlign, TextboxInfo, TextureComponent, TextureIR
+            CollisionShapeIR, EntityIdentifier, ImageInfo, ImagePosition, PatternInfo, PatternType,
+            PieceColliderIR, PieceIR, PileIR, TextAlign, TextboxInfo, TextureComponent, TextureIR,
         },
         piles::PileManager,
         players::{PlayerColor, PlayerManager},
@@ -2585,9 +2586,11 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
 
             furthest_entry_y = position.y();
         }
-        self.max_selector_scroll = furthest_entry_y - first_entry_y - self.dimensions().y()
-            + padding * 2.0
-            + entry_dimensions.y();
+        self.max_selector_scroll = 0.0_f32.max(
+            furthest_entry_y - first_entry_y - self.dimensions().y()
+                + padding * 2.0
+                + entry_dimensions.y(),
+        );
 
         // create tap again ui piece
         let tap_again_texture_ir = TextureIR {

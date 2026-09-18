@@ -293,7 +293,8 @@ impl InputState {
         let output_table = lua
             .create_table_with_capacity(players.len(), 0)
             .expect("Unable to create player input table");
-        for (idx, player) in players.into_iter().enumerate() {
+        let mut idx = 1;
+        for player in players.into_iter() {
             if let Some(input_table) = self
                 .player_map
                 .get_mut(player)
@@ -301,8 +302,9 @@ impl InputState {
                 .extract(lua, player.name())
             {
                 output_table
-                    .raw_set(idx + 1, input_table)
+                    .raw_set(idx, input_table)
                     .expect("Unable to create player input table");
+                idx += 1;
             }
         }
 

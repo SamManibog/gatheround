@@ -1,14 +1,19 @@
-const oglog = console.log
-console.log = function (...args) {
-    const elem = document.createElement('p');
-    elem.textContent = args.join();
-    document.getElementById("console").appendChild(elem);
-};
-console.error = function (...args) {
-    const elem = document.createElement('p');
-    elem.textContent = args.join();
-    document.getElementById("console").appendChild(elem);
-};
+function logToSite() {
+    document.getElementById("console").classList.remove("hidden");
+
+    const oglog = console.log
+    console.log = function (...args) {
+        const elem = document.createElement('p');
+        elem.textContent = args.join();
+        document.getElementById("console").appendChild(elem);
+    };
+    console.error = function (...args) {
+        const elem = document.createElement('p');
+        elem.textContent = args.join();
+        document.getElementById("console").appendChild(elem);
+    };
+}
+//logToSite();
 
 const trackpad = document.getElementById("trackpad");
 
@@ -128,7 +133,7 @@ trackpad.addEventListener('pointermove', (e) => {
     let currentY = e.clientY;
 
     // Check if movement exceeds threshold
-    if (Math.abs(currentX - startX) > threshold || Math.abs(currentY - startY) > threshold) {
+    if (!isDragging && (Math.abs(currentX - startX) > threshold || Math.abs(currentY - startY) > threshold)) {
         isDragging = true;
         lastX = currentX;
         lastY = currentY;
