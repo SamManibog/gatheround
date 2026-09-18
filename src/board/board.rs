@@ -2175,7 +2175,7 @@ impl<C: IColor, R: IRect, V: IVec2, S: IConvexShape + FromLuaTable + Debug + Fro
             TextboxInfo {
                 rect: instructions_rect.with_position(V::origin()),
                 text: format!(
-                    "1) Connect to this device's hotspot\n\n2) Open your web browser\n\n3) In the address bar, enter\n     the following URL:\n     https://{url}\n\n4) Select a color to play as\n\n 5) Use your screen as a touchpad"
+                    "1) Connect to this device's hotspot\n\n2) Open your web browser\n\n3) In the address bar, enter\n     the following URL:\n     http://{url}\n\n4) Select a color to play as\n\n 5) Use your screen as a touchpad"
                 ),
                 align: TextAlign::TopLeft,
                 spacing: None,

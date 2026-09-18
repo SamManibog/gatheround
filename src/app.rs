@@ -4,7 +4,7 @@ use mlua::{Lua, MultiValue};
 
 use crate::{
     assets,
-    board::{BoardManager, players::PlayerColor},
+    board::{BoardManager, irs::TextureIR, players::PlayerColor, textures::TextureEntity},
     cheat_buffer::CheatBuffer,
     game::{self},
     input::InputState,
@@ -273,7 +273,6 @@ impl<
 
                 // ignore kicking
                 ServerEvent::KickPlayer(_) => (),
-
             }
         }
 
@@ -311,8 +310,6 @@ impl<
                     self.board_cell.borrow_mut().lobby_add_player(player);
                     self.input_state.add_player(player);
                 }
-
-
             }
         }
 
@@ -332,8 +329,14 @@ impl<
         let mut enter_selector = false;
         for event in self.server.poll_events() {
             match event {
-                ServerEvent::EnterLobby => { enter_lobby = true; enter_selector = false; }
-                ServerEvent::EnterGameSelector => { enter_lobby = false; enter_selector = true }
+                ServerEvent::EnterLobby => {
+                    enter_lobby = true;
+                    enter_selector = false;
+                }
+                ServerEvent::EnterGameSelector => {
+                    enter_lobby = false;
+                    enter_selector = true
+                }
                 ServerEvent::SetHost(player) => self.host_player = Some(player),
 
                 // prevent new players from joining
@@ -341,7 +344,6 @@ impl<
 
                 // ignore kicking
                 ServerEvent::KickPlayer(_) => (),
-
             }
         }
 

@@ -1,17 +1,27 @@
 use std::{
     collections::{HashMap, VecDeque},
     fmt::Display,
-    sync::mpsc,
+    sync::{Arc, Mutex, mpsc},
+    time::Duration,
 };
 
-use axum::http::StatusCode;
+use axum::{
+    extract::{
+        WebSocketUpgrade,
+        ws::{Message, Utf8Bytes, WebSocket},
+    },
+    http::StatusCode,
+    response::Response,
+};
 use base64::Engine;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tokio::{self, sync::oneshot};
 
 use crate::{
-    board::players::PlayerColor, input::{InputEvent, PlayerInputEvent}, utils::ecs::DenseComponentManager,
+    board::players::PlayerColor,
+    input::{DeserializableInputEvent, InputEvent, PlayerInputEvent},
+    utils::ecs::DenseComponentManager,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,16 +88,46 @@ impl From<ServerEvent> for PrivateServerEvent {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub(super) struct DeserializablePlayerEntry {
-    /// the player's name
-    pub color: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
 pub(super) struct DeserializableHostEvent {
     pub start_lobby: Option<bool>,
     pub start_game_selector: Option<bool>,
     pub kick_player: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct DeserializableSessionSocketHandshake {
+    color: Option<String>,
+    token: String,
+}
+
+#[derive(Debug)]
+struct SessionSocketHandshake {
+    color: Option<PlayerColor>,
+    token: SessionToken,
+}
+
+impl TryFrom<DeserializableSessionSocketHandshake> for SessionSocketHandshake {
+    type Error = ();
+
+    fn try_from(value: DeserializableSessionSocketHandshake) -> Result<Self, Self::Error> {
+        let color = if let Some(color) = value.color {
+            if let Some(player_color) = PlayerColor::from_name(&color) {
+                Some(player_color)
+            } else {
+                return Err(());
+            }
+        } else {
+            None
+        };
+
+        let token = if let Some(token) = SessionToken::from_str(&value.token) {
+            token
+        } else {
+            return Err(());
+        };
+
+        Ok(Self { color, token })
+    }
 }
 
 impl TryInto<Vec<ServerEvent>> for &DeserializableHostEvent {
@@ -117,11 +157,16 @@ impl TryInto<Vec<ServerEvent>> for &DeserializableHostEvent {
 }
 
 #[derive(Debug)]
+pub(super) enum WebRtcSetupError {
+    NonPlayer,
+    WebRtcError(webrtc::error::Error),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum NewPlayerError {
     GameFull,
     NewJoinsDisabled,
-    PlayerAlreadyUsed,
-    IsAlreadyPlayer,
+    ColorAlreadyUsed,
     SessionDoesNotExist,
 }
 
@@ -130,8 +175,7 @@ impl NewPlayerError {
         match self {
             Self::GameFull => StatusCode::LOCKED,
             Self::NewJoinsDisabled => StatusCode::LOCKED,
-            Self::PlayerAlreadyUsed => StatusCode::CONFLICT,
-            Self::IsAlreadyPlayer => StatusCode::PRECONDITION_FAILED,
+            Self::ColorAlreadyUsed => StatusCode::CONFLICT,
             Self::SessionDoesNotExist => StatusCode::UNAUTHORIZED,
         }
     }
@@ -142,8 +186,7 @@ impl Display for NewPlayerError {
         let message = match self {
             Self::GameFull => "game full",
             Self::NewJoinsDisabled => "joins disabled",
-            Self::PlayerAlreadyUsed => "color taken",
-            Self::IsAlreadyPlayer => "is already player",
+            Self::ColorAlreadyUsed => "color taken",
             Self::SessionDoesNotExist => "session does not exist",
         };
         write!(f, "{}", message)
@@ -154,12 +197,27 @@ impl Display for NewPlayerError {
 struct PlayerState {
     color: PlayerColor,
     update_state: SessionUpdateState,
+    websocket_handle: oneshot::Sender<()>,
 }
 
 impl PlayerState {
-    pub fn new(color: PlayerColor) -> Self {
+    pub fn new(color: PlayerColor, websocket_handle: oneshot::Sender<()>) -> Self {
         Self {
             color,
+            update_state: SessionUpdateState::new(),
+            websocket_handle,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct NonPlayerState {
+    update_state: SessionUpdateState,
+}
+
+impl NonPlayerState {
+    pub fn new() -> Self {
+        Self {
             update_state: SessionUpdateState::new(),
         }
     }
@@ -168,14 +226,14 @@ impl PlayerState {
 #[derive(Debug)]
 enum SessionState {
     Player(Box<PlayerState>),
-    NonPlayer(SessionUpdateState),
+    NonPlayer(NonPlayerState),
 }
 
 impl SessionState {
     pub fn mark_as_needs_update(&mut self) {
         match self {
             Self::Player(p) => p.update_state.needs_update = true,
-            Self::NonPlayer(n) => n.needs_update = true,
+            Self::NonPlayer(n) => n.update_state.needs_update = true,
         }
     }
 
@@ -257,6 +315,8 @@ pub(super) struct ServerState {
 }
 
 impl ServerState {
+    pub const PLAYER_CONNECTION_TIMEOUT: Duration = Duration::from_millis(3000);
+
     pub const NON_PLAYER_SESSION_MAX: usize = PlayerColor::COLOR_COUNT * 2;
 
     pub fn new(
@@ -335,7 +395,7 @@ impl ServerState {
                     Self::build_player_state_response(players.as_slice()),
                 ),
 
-                SessionState::NonPlayer(n) => n.try_complete(
+                SessionState::NonPlayer(n) => n.update_state.try_complete(
                     StatusCode::ACCEPTED,
                     Self::build_non_player_state_response(joins_allowed, players.as_slice()),
                 ),
@@ -359,7 +419,7 @@ impl ServerState {
             match session {
                 SessionState::Player(_) => true,
 
-                SessionState::NonPlayer(n) => n.try_complete(
+                SessionState::NonPlayer(n) => n.update_state.try_complete(
                     StatusCode::ACCEPTED,
                     Self::build_non_player_state_response(joins_allowed, players.as_slice()),
                 ),
@@ -378,7 +438,7 @@ impl ServerState {
             match session {
                 SessionState::Player(_) => true,
 
-                SessionState::NonPlayer(n) => n.try_complete(
+                SessionState::NonPlayer(n) => n.update_state.try_complete(
                     StatusCode::ACCEPTED,
                     Self::build_non_player_state_response(joins_allowed, players.as_slice()),
                 ),
@@ -465,7 +525,7 @@ impl ServerState {
     fn mark_non_players_need_update(&mut self) {
         for state in self.session_states.values_mut() {
             match state {
-                SessionState::NonPlayer(n) => n.needs_update = true,
+                SessionState::NonPlayer(n) => n.update_state.needs_update = true,
                 _ => (),
             }
         }
@@ -548,7 +608,7 @@ impl ServerState {
 
         match session {
             SessionState::Player(_) => None,
-            SessionState::NonPlayer(n) => Some(n.subscribe()),
+            SessionState::NonPlayer(n) => Some(n.update_state.subscribe()),
         }
     }
 
@@ -597,7 +657,7 @@ impl ServerState {
                 let session = self.session_states.get_mut(&kicked_token).unwrap();
                 match session {
                     SessionState::NonPlayer(n) => {
-                        n.try_complete(
+                        n.update_state.try_complete(
                             StatusCode::REQUEST_TIMEOUT,
                             String::from("color selection took too long"),
                         );
@@ -610,17 +670,157 @@ impl ServerState {
         let token = SessionToken::new();
         self.session_states.insert(
             token.clone(),
-            SessionState::NonPlayer(SessionUpdateState::new()),
+            SessionState::NonPlayer(NonPlayerState::new()),
         );
         self.non_player_sessions.push_back(token.clone());
         Some(token)
     }
 
+    /// confirms a player websocket
+    /// the player's color on confirmation
+    async fn confirm_player_websocket(
+        self_arc: Arc<Mutex<Self>>,
+        socket: &mut WebSocket,
+        cancel_sender: oneshot::Sender<()>,
+    ) -> Option<PlayerColor> {
+        let handshake_msg = tokio::select! {
+            msg = socket.recv() => msg,
+            _ = tokio::time::sleep(Self::PLAYER_CONNECTION_TIMEOUT) => {
+                return None;
+            }
+        };
+
+        let handshake = match handshake_msg {
+            Some(Ok(Message::Text(message))) => {
+                match serde_json::from_str::<DeserializableSessionSocketHandshake>(&message) {
+                    Ok(handshake) => match SessionSocketHandshake::try_from(handshake) {
+                        Ok(h) => h,
+                        Err(_) => return None,
+                    },
+                    Err(_) => return None,
+                }
+            }
+            _ => return None,
+        };
+
+        let mut self_lock = self_arc.lock().expect("unable too lock");
+        let session = if let Some(session) = self_lock.session_states.get_mut(&handshake.token) {
+            session
+        } else {
+            return None;
+        };
+        match session {
+            SessionState::Player(p) => {
+                p.websocket_handle = cancel_sender;
+                Some(p.color)
+            }
+            SessionState::NonPlayer(_) => {
+                let color = if let Some(color) = handshake.color {
+                    color
+                } else {
+                    return None;
+                };
+                if self_lock
+                    .promote_to_player(&handshake.token, color, cancel_sender)
+                    .is_err()
+                {
+                    return None;
+                }
+                Some(color)
+            }
+        }
+    }
+
+    /// attempts to establish a websocket for the given session
+    /// returns none if the token is not a valid
+    pub fn establish_player_websocket(
+        &mut self,
+        ws: WebSocketUpgrade,
+        self_arc: Arc<Mutex<Self>>,
+    ) -> Response {
+        let input_sender = self.input_sender.clone();
+
+        ws.on_upgrade(async move |mut socket| {
+            // verify socket's initial response
+            let (cancel_sender, mut cancel_receiver) = oneshot::channel::<()>();
+            let color = if let Some(color) =
+                Self::confirm_player_websocket(self_arc, &mut socket, cancel_sender).await
+            {
+                let _ = socket
+                    .send(Message::Text(Utf8Bytes::from_static("accepted")))
+                    .await;
+                color
+            } else {
+                let _ = socket
+                    .send(Message::Text(Utf8Bytes::from_static("rejected")))
+                    .await;
+                let _ = socket
+                    .send(Message::Close(None))
+                    .await;
+                return;
+            };
+
+            // main body
+            let should_continue = |socket_response| {
+                let msg_result = if let Some(msg_result) = socket_response {
+                    msg_result
+                } else {
+                    return false;
+                };
+                let msg = if let Ok(msg) = msg_result {
+                    msg
+                } else {
+                    return false;
+                };
+
+                match msg {
+                    Message::Text(t) => {
+                        let input_result =
+                            serde_json::from_str::<DeserializableInputEvent>(t.as_str());
+                        let de_input = match input_result {
+                            Ok(input) => input,
+                            Err(_) => return true,
+                        };
+                        let input = match InputEvent::try_from(&de_input) {
+                            Ok(input) => input,
+                            Err(_) => return true,
+                        };
+                        let _ = input_sender.send(PlayerInputEvent {
+                            player: color,
+                            event: input,
+                        });
+                        true
+                    }
+                    Message::Close(_) => false,
+                    _ => true,
+                }
+            };
+
+            loop {
+                tokio::select! {
+                    _ = (&mut cancel_receiver).into_future() => {
+                        break;
+                    }
+                    socket_response = socket.recv() => {
+                        if !should_continue(socket_response) {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            let _ = socket
+                .send(Message::Close(None))
+            .await;
+        })
+    }
+
     /// promotes the given non-player session to a player of the given color
-    pub fn promote_to_player(
+    fn promote_to_player(
         &mut self,
         token: &SessionToken,
         color: PlayerColor,
+        cancel_sender: oneshot::Sender<()>,
     ) -> Result<(), NewPlayerError> {
         let is_host = self.is_host(token);
         if !is_host {
@@ -631,21 +831,21 @@ impl ServerState {
             if self.permanent_session_count >= PlayerColor::COLOR_COUNT {
                 return Err(NewPlayerError::GameFull);
             }
+        }
 
-            if self.players.contains(color) {
-                return Err(NewPlayerError::PlayerAlreadyUsed);
-            }
+        if self.players.contains(color) {
+            return Err(NewPlayerError::ColorAlreadyUsed);
         }
 
         let session = match self.session_states.get_mut(token) {
             Some(s) => s,
             None => return Err(NewPlayerError::SessionDoesNotExist),
         };
-
         match session {
-            SessionState::Player(_) => return Err(NewPlayerError::IsAlreadyPlayer),
+            SessionState::Player(_) => (),
             SessionState::NonPlayer(n) => {
-                n.try_complete(StatusCode::GONE, format!("upgraded to player"))
+                n.update_state
+                    .try_complete(StatusCode::GONE, format!("upgraded to player"));
             }
         };
 
@@ -656,7 +856,8 @@ impl ServerState {
                 .unwrap(),
         );
 
-        *session = SessionState::Player(Box::new(PlayerState::new(color)));
+        // create new player
+        *session = SessionState::Player(Box::new(PlayerState::new(color, cancel_sender)));
         self.players.insert(color, token.clone());
 
         if !is_host {
@@ -673,13 +874,14 @@ impl ServerState {
                 .expect("Could not set host event to main thread.");
         }
 
+        // clear extraneous sessions
         if !self.joins_allowed() {
             for token in self.non_player_sessions.drain(..) {
                 let session = self.session_states.remove(&token).unwrap();
                 match session {
-                    SessionState::NonPlayer(mut n) => {
-                        n.try_complete(StatusCode::FORBIDDEN, format!("kicked"))
-                    }
+                    SessionState::NonPlayer(mut n) => n
+                        .update_state
+                        .try_complete(StatusCode::FORBIDDEN, format!("kicked")),
                     SessionState::Player(_) => unreachable!(),
                 };
             }
@@ -696,14 +898,16 @@ impl ServerState {
     pub fn set_host(&mut self, token: SessionToken) {
         if let Some(session) = self.session_states.get(&token) {
             let _ = match session {
-                SessionState::Player(p) => self.event_sender.send(ServerEvent::SetHost(p.color).into()),
+                SessionState::Player(p) => {
+                    self.event_sender.send(ServerEvent::SetHost(p.color).into())
+                }
                 _ => Ok(()),
             };
         } else {
             // reserve host's token
             self.session_states.insert(
                 token.clone(),
-                SessionState::NonPlayer(SessionUpdateState::new()),
+                SessionState::NonPlayer(NonPlayerState::new()),
             );
             self.non_player_sessions.push_back(token.clone());
             self.permanent_session_count += 1;
@@ -746,30 +950,14 @@ impl ServerState {
         }
     }
 
-    /// handles an input event for the given token
-    /// returns true on success and false on failure
-    /// fails only if the token is not a player
-    pub fn handle_input_event(&mut self, token: &SessionToken, event: InputEvent) -> bool {
-        let session = if let Some(s) = self.session_states.get(token) {
-            s
-        } else {
-            return false;
-        };
-
-        let player = if let SessionState::Player(p) = session {
-            p.color
-        } else {
-            return false;
-        };
-
-        let _ = self.input_sender.send(PlayerInputEvent { player, event });
-        true
-    }
-
     /// handles a host command for the given token
     /// returns true on success and false on failure
     /// fails only if the token is not the host
-    pub fn handle_host_commands(&mut self, token: &SessionToken, commands: Vec<ServerEvent>) -> bool {
+    pub fn handle_host_commands(
+        &mut self,
+        token: &SessionToken,
+        commands: Vec<ServerEvent>,
+    ) -> bool {
         if !self.is_host(token) {
             return false;
         }
@@ -779,5 +967,68 @@ impl ServerState {
         }
 
         true
+    }
+
+    /// register a webrtc connection for trackpad input
+    pub async fn handle_webrtc_offer(
+        &mut self,
+        token: &SessionToken,
+        offer_sdp: String,
+    ) -> Result<String, WebRtcSetupError> {
+        todo!()
+        /*
+                let player = if let Some(session) = self.session_states.get_mut(token) {
+                    match &mut session {
+                        SessionState::Player(p) => p,
+                        _ => return Err(WebRtcSetupError::NonPlayer),
+                    }
+                } else {
+                    return Err(WebRtcSetupError::NonPlayer);
+                };
+
+                let config = RTCConfigurationBuilder::new()
+                    .with_ice_servers(Vec::new())
+                    .build();
+                let peer_connection =
+                    match Arc::new(PeerConnectionBuilder::new().with_configuration(config))
+                        .build()
+                        .await
+                    {
+                        Ok(connection) => connection,
+                        Err(err) => return Err(WebRtcSetupError::WebRtcError(err)),
+                    };
+
+                // Register callback for incoming data channel created by the client
+                peer_connection.create_data_channel(Box::new(|dc| {
+                    Box::pin(async move {
+                        let dc_label = dc.label().to_string();
+                        println!("DataChannel initialized: {}", dc_label);
+
+                        dc.on_message(Box::new(move |msg| {
+                            Box::pin(async move {
+                                let text = String::from_utf8_lossy(&msg.data);
+                                // Process low-latency input packet here
+                                println!("Received input: {}", text);
+                            })
+                        }));
+                    })
+                }));
+
+                // Parse the client's offer
+                let offer = match RTCSessionDescription::offer(offer_sdp) {
+                    Ok(offer) => offer,
+                    Err(err) => return Err(WebRtcSetupError::WebRtcError(Box::new(err))),
+                };
+                peer_connection.set_remote_description(offer).await?;
+
+                // Create and set local answer SDP
+                let answer = peer_connection.create_answer(None).await?;
+                peer_connection
+                    .set_local_description(answer.clone())
+                    .await?;
+
+                // Return the SDP answer back to the JS client
+                Ok(answer.sdp)
+        */
     }
 }

@@ -8,7 +8,13 @@ use std::{
     thread::{self},
 };
 
-use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
+use axum::{
+    Json, Router,
+    extract::{State, WebSocketUpgrade},
+    http::StatusCode,
+    response::Response,
+    routing::post,
+};
 use axum_extra::extract::{
     CookieJar,
     cookie::{Cookie, SameSite},
@@ -19,10 +25,10 @@ use tower_http::services::ServeDir;
 
 use crate::{
     board::players::PlayerColor,
-    input::{DeserializableInputEvent, InputEvent, PlayerInputEvent},
+    input::PlayerInputEvent,
     server::{
-        DeserializableHostEvent, DeserializablePlayerEntry, PrivateServerEvent, ServerEvent,
-        ServerState, SessionKind, SessionToken,
+        DeserializableHostEvent, PrivateServerEvent, ServerEvent, ServerState, SessionKind,
+        SessionToken,
     },
 };
 
@@ -42,7 +48,6 @@ impl GameServer {
     pub const PLAYER_PATH: &str = "/games";
 
     pub const SESSION_ASSIGNMENT_PATH: &str = "/games/join";
-    pub const PLAYER_ASSIGNMENT_PATH: &str = "/games/claim-player";
     pub const HOST_ASSIGNMENT_PATH: &str = "/games/claim-host";
 
     pub const JOIN_EVENT_STREAM_PATH: &str = "/games/join-events";
@@ -53,7 +58,7 @@ impl GameServer {
     pub const PLAYER_STATE_PATH: &str = "/games/player-state";
     pub const HOST_STATE_PATH: &str = "/games/host-state";
 
-    pub const PLAYER_API_PATH: &str = "/games/player-api";
+    pub const PLAYER_WEBSOCKET_PATH: &str = "/games/player-ws";
     pub const HOST_API_PATH: &str = "/games/host-api";
 
     pub const STATIC_PLAYER_FILES_PATH: &str = "./static/controller";
@@ -210,36 +215,6 @@ impl GameServer {
         Self::generic_state_handler(state, &jar, SessionKind::Host, "not the host").await
     }
 
-    async fn player_api_handler(
-        State(state): State<Arc<Mutex<ServerState>>>,
-        jar: CookieJar,
-        Json(payload): Json<DeserializableInputEvent>,
-    ) -> (StatusCode, String) {
-        let token = match Self::parse_session_cookie(&jar) {
-            Ok(t) => t,
-            Err(msg) => return msg,
-        };
-
-        let input = match <InputEvent as TryFrom<&DeserializableInputEvent>>::try_from(&payload) {
-            Err(msg) => return (StatusCode::BAD_REQUEST, msg),
-            Ok(event) => event,
-        };
-
-        let mut state_lock = match state.lock() {
-            Ok(lock) => lock,
-            Err(msg) => panic!("{}", msg),
-        };
-
-        if state_lock.handle_input_event(&token, input) {
-            (StatusCode::ACCEPTED, format!("input received"))
-        } else {
-            (
-                StatusCode::FORBIDDEN,
-                format!("Expired {}", Self::SESSION_COOKIE_NAME),
-            )
-        }
-    }
-
     async fn host_api_handler(
         State(state): State<Arc<Mutex<ServerState>>>,
         jar: CookieJar,
@@ -293,9 +268,7 @@ impl GameServer {
                 let mut session_cookie =
                     Cookie::new(Self::SESSION_COOKIE_NAME, token.to_url_string());
                 session_cookie.set_same_site(SameSite::Strict);
-                session_cookie.set_path(Self::PLAYER_PATH);
-                session_cookie.set_http_only(true);
-                session_cookie.set_secure(true);
+                session_cookie.set_path("/");
                 session_cookie.set_max_age(Self::COOKIE_LIFETIME);
                 let updated_jar = jar.add(session_cookie);
 
@@ -306,30 +279,15 @@ impl GameServer {
         }
     }
 
-    async fn player_assignment_handler(
+    async fn player_websocket_handler(
         State(state): State<Arc<Mutex<ServerState>>>,
-        jar: CookieJar,
-        Json(payload): Json<DeserializablePlayerEntry>,
-    ) -> (StatusCode, String) {
-        let requested_color = match PlayerColor::try_from(&payload.color) {
-            Ok(request) => request,
-            Err(msg) => return (StatusCode::BAD_REQUEST, msg),
-        };
-
-        let token = match Self::parse_session_cookie(&jar) {
-            Ok(token) => token,
-            Err((code, text)) => return (code, text),
-        };
-
+        ws: WebSocketUpgrade,
+    ) -> Response {
         let mut state_lock = match state.lock() {
             Ok(lock) => lock,
             Err(msg) => panic!("{msg}"),
         };
-
-        match state_lock.promote_to_player(&token, requested_color) {
-            Ok(()) => (StatusCode::ACCEPTED, format!("player assigned")),
-            Err(msg) => (msg.status_code(), format!("{msg}")),
-        }
+        state_lock.establish_player_websocket(ws, state.clone())
     }
 
     async fn host_assignment_handler(
@@ -360,9 +318,7 @@ impl GameServer {
             let token = SessionToken::new();
             let mut session_cookie = Cookie::new(Self::SESSION_COOKIE_NAME, token.to_url_string());
             session_cookie.set_same_site(SameSite::Strict);
-            session_cookie.set_path(Self::PLAYER_PATH);
-            session_cookie.set_http_only(true);
-            session_cookie.set_secure(true);
+            session_cookie.set_path("/");
             session_cookie.set_max_age(Self::COOKIE_LIFETIME);
             let updated_jar = jar.add(session_cookie);
 
@@ -407,10 +363,6 @@ impl GameServer {
                 post(Self::session_assignment_handler),
             )
             .route(
-                Self::PLAYER_ASSIGNMENT_PATH,
-                post(Self::player_assignment_handler),
-            )
-            .route(
                 Self::HOST_ASSIGNMENT_PATH,
                 post(Self::host_assignment_handler),
             )
@@ -426,12 +378,16 @@ impl GameServer {
             .route(Self::PLAYER_STATE_PATH, post(Self::player_state_handler))
             .route(Self::HOST_STATE_PATH, post(Self::host_state_handler))
             // main apis
-            .route(Self::PLAYER_API_PATH, post(Self::player_api_handler))
+            .route(
+                Self::PLAYER_WEBSOCKET_PATH,
+                axum::routing::any(Self::player_websocket_handler),
+            )
             .route(Self::HOST_API_PATH, post(Self::host_api_handler))
             .with_state(state.clone().into());
 
         let handle = Handle::new();
         let handle_clone = handle.clone();
+        let address_clone = address.clone();
         thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -446,26 +402,32 @@ impl GameServer {
                 .await
                 .expect("Unable to create TLS configuration");
 
+                println!("Server running on http://{}", &address_clone);
+                println!("Be sure to open this device's hotspot and ensure everyone is connected.");
+                println!(
+                    "Lobby will open once host connects at http://{address_clone}{}",
+                    Self::HOST_PATH
+                );
+
                 axum_server::bind_rustls(socket_addr, tls_config)
                     .handle(handle_clone)
                     .serve(app.into_make_service())
                     .await
                     .expect("Server failed to run");
+
+                /*
+                                let listener = tokio::net::TcpListener::bind(&address_clone).await.unwrap();
+                                axum::serve(listener, app).await.unwrap();
+                */
             });
         });
 
-        println!("Server started at https://{address}.");
-
-        println!(
-            "Awaiting host connection at https://{address}{}",
-            Self::HOST_PATH
-        );
         for cmd in event_receiver.iter() {
             if cmd == PrivateServerEvent::HostConnected {
                 break;
             }
         }
-        println!("Host connected.");
+        println!("Host connected. Opening lobby...");
 
         let out = Self {
             ip_addr: address,
