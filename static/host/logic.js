@@ -53,24 +53,77 @@ openGameSelectorButton.addEventListener("click", async (e) => {
 
 let continueHostLoop = true;
 async function initHostState() {
-    const state_response = await fetch("/games/host-state", {
+    const response = await fetch("/games/host-state", {
         method: "POST",
         credentials: 'include',
     })
 
-    console.log("TODO: init state, got: ", await state_response.text());
+    if (response.ok) {
+        handleHostState(await response.json());
+    } else {
+        console.error(`ERROR [${response.status}]: ${await response.text()}`);
+    }
 
     continueHostLoop = true;
     handleHostEvents();
 }
 
+const kickPlayerButtons = {
+    red: document.getElementById("kickPlayerRed"),
+    orange: document.getElementById("kickPlayerOrange"),
+    yellow: document.getElementById("kickPlayerYellow"),
+    green: document.getElementById("kickPlayerGreen"),
+    blue: document.getElementById("kickPlayerBlue"),
+    purple: document.getElementById("kickPlayerPurple"),
+    pink: document.getElementById("kickPlayerPink"),
+    lime: document.getElementById("kickPlayerLime"),
+    cyan: document.getElementById("kickPlayerCyan"),
+    black: document.getElementById("kickPlayerBlack"),
+    white: document.getElementById("kickPlayerWhite"),
+    brown: document.getElementById("kickPlayerBrown"),
+};
+for (buttonName in kickPlayerButtons) {
+    const color = buttonName;
+    kickPlayerButtons[buttonName].addEventListener("click", async (e) => {
+        const response = await fetch('/games/host-api', {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            credentials: 'include',
+            body: JSON.stringify({
+                kick_player: color,
+            })
+        });
+
+        if (!response.ok) {
+            console.error(`ERROR [${response.status}]: ${await response.text()}`);
+        }
+    });
+}
+function handleHostState(state) {
+    const playerSet = new Set();
+    for (player of state.players) {
+        playerSet.add(player);
+    }
+
+    for (buttonName in kickPlayerButtons) {
+        const button = kickPlayerButtons[buttonName];
+        button.disabled = !state.kicks_allowed || state.host == buttonName || !playerSet.has(buttonName);
+    }
+}
+
 async function handleHostEvents() {
-    const event_response = await fetch("/games/host-events", {
+    const response = await fetch("/games/host-events", {
         method: "POST",
         credentials: 'include',
     })
 
-    console.log("TODO: handle events, got: ", await event_response.text());
+    if (response.ok) {
+        handleHostState(await response.json());
+    } else {
+        console.error(`ERROR [${response.status}]: ${await response.text()}`);
+    }
 
     // call again to perpetuate loop
     if (continueHostLoop) {

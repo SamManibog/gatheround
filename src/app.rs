@@ -272,23 +272,23 @@ impl<
                 ServerEvent::Joined(player) => kick_list.push(player),
 
                 // ignore kicking
-                ServerEvent::KickPlayer(_) => (),
+                ServerEvent::TryKickPlayer(_) => (),
             }
+        }
+        for player in kick_list {
+            self.input_state.remove_player(player);
+            self.board_cell.borrow_mut().remove_player(player);
+            self.server.kick_player(player);
         }
 
         if enter_lobby {
             return self.start_lobby();
         }
 
-        let path_opt = {
-            let mut board = self.board_cell.borrow_mut();
-            for player in kick_list {
-                board.remove_player(player);
-                self.server.kick_player(player);
-            }
-
-            board.selector_handle_inputs(self.server.poll_inputs())
-        };
+        let path_opt = self
+            .board_cell
+            .borrow_mut()
+            .selector_handle_inputs(self.server.poll_inputs());
 
         if let Some(path) = path_opt {
             self.start_game(path);
@@ -304,13 +304,18 @@ impl<
                 ServerEvent::EnterLobby => enter_selector = false,
                 ServerEvent::EnterGameSelector => enter_selector = true,
                 ServerEvent::SetHost(player) => self.host_player = Some(player),
-                ServerEvent::KickPlayer(player) => kick_list.push(player),
+                ServerEvent::TryKickPlayer(player) => kick_list.push(player),
 
                 ServerEvent::Joined(player) => {
                     self.board_cell.borrow_mut().lobby_add_player(player);
                     self.input_state.add_player(player);
                 }
             }
+        }
+        for player in kick_list {
+            self.input_state.remove_player(player);
+            self.board_cell.borrow_mut().lobby_remove_player(player);
+            self.server.kick_player(player);
         }
 
         if enter_selector {
@@ -343,8 +348,13 @@ impl<
                 ServerEvent::Joined(player) => kick_list.push(player),
 
                 // ignore kicking
-                ServerEvent::KickPlayer(_) => (),
+                ServerEvent::TryKickPlayer(_) => (),
             }
+        }
+        for player in kick_list {
+            self.input_state.remove_player(player);
+            self.board_cell.borrow_mut().remove_player(player);
+            self.server.kick_player(player);
         }
 
         if enter_lobby {

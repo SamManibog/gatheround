@@ -78,20 +78,13 @@ pub enum ServerEvent {
 
     SetHost(PlayerColor),
     Joined(PlayerColor),
-    KickPlayer(PlayerColor),
+    TryKickPlayer(PlayerColor),
 }
 
 impl From<ServerEvent> for PrivateServerEvent {
     fn from(value: ServerEvent) -> Self {
         Self::PublicEvent(value)
     }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub(super) struct DeserializableHostEvent {
-    pub start_lobby: Option<bool>,
-    pub start_game_selector: Option<bool>,
-    pub kick_player: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -127,32 +120,6 @@ impl TryFrom<DeserializableSessionSocketHandshake> for SessionSocketHandshake {
         };
 
         Ok(Self { color, token })
-    }
-}
-
-impl TryInto<Vec<ServerEvent>> for &DeserializableHostEvent {
-    type Error = String;
-
-    fn try_into(self) -> Result<Vec<ServerEvent>, Self::Error> {
-        let mut vec = Vec::new();
-
-        if let Some(true) = self.start_lobby {
-            vec.push(ServerEvent::EnterLobby);
-        }
-
-        if let Some(true) = self.start_game_selector {
-            vec.push(ServerEvent::EnterGameSelector);
-        }
-
-        if let Some(color_str) = &self.kick_player {
-            if let Some(color) = PlayerColor::from_name(&color_str) {
-                vec.push(ServerEvent::KickPlayer(color));
-            } else {
-                return Err(format!("invalid color: {color_str}"));
-            }
-        }
-
-        Ok(vec)
     }
 }
 
@@ -286,6 +253,7 @@ impl SessionUpdateState {
 struct HostStateResponse<'a> {
     players: &'a [PlayerColor],
     host: Option<PlayerColor>,
+    kicks_allowed: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -312,6 +280,7 @@ pub(super) struct ServerState {
 
     players: DenseComponentManager<PlayerColor, SessionToken>,
     joins_blocked: bool,
+    kicks_allowed: bool,
 }
 
 impl ServerState {
@@ -335,6 +304,7 @@ impl ServerState {
 
             players: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
             joins_blocked: true,
+            kicks_allowed: true,
         }
     }
 
@@ -374,8 +344,16 @@ impl ServerState {
     }
 
     /// builds a host update request
-    pub fn build_host_state_response(host: Option<PlayerColor>, players: &[PlayerColor]) -> String {
-        let state = HostStateResponse { players, host };
+    pub fn build_host_state_response(
+        host: Option<PlayerColor>,
+        players: &[PlayerColor],
+        kicks_allowed: bool,
+    ) -> String {
+        let state = HostStateResponse {
+            players,
+            host,
+            kicks_allowed,
+        };
 
         serde_json::to_string(&state).unwrap()
     }
@@ -507,7 +485,7 @@ impl ServerState {
 
         session.try_complete(
             StatusCode::ACCEPTED,
-            Self::build_host_state_response(host_color, &players),
+            Self::build_host_state_response(host_color, &players, self.kicks_allowed),
         );
     }
 
@@ -754,9 +732,7 @@ impl ServerState {
                 let _ = socket
                     .send(Message::Text(Utf8Bytes::from_static("rejected")))
                     .await;
-                let _ = socket
-                    .send(Message::Close(None))
-                    .await;
+                let _ = socket.send(Message::Close(None)).await;
                 return;
             };
 
@@ -809,9 +785,7 @@ impl ServerState {
                 }
             }
 
-            let _ = socket
-                .send(Message::Close(None))
-            .await;
+            let _ = socket.send(Message::Close(None)).await;
         })
     }
 
@@ -967,6 +941,14 @@ impl ServerState {
         }
 
         true
+    }
+
+    /// allows kicks
+    pub fn set_kicks_allowed_hint(&mut self, allowed: bool) {
+        self.kicks_allowed = allowed;
+
+        self.mark_host_needs_update();
+        self.send_host_state();
     }
 
     /// register a webrtc connection for trackpad input

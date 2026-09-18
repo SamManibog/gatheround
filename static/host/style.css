@@ -28,6 +28,70 @@ html, body {
     background-color: Canvas;
 }
 
+.color-selector {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(4, 1fr);
+    gap: 16px;
+}
+
+@media (orientation: landscape) {
+    .color-selector {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        grid-template-rows: repeat(3, 1fr);
+        gap: 16px;
+    }
+}
+
+.color-selector-button {
+    aspect-ratio: 1;
+    max-width: 80px;
+}
+.player-red {
+    background-color: var(--player-red);
+}
+.player-orange {
+    background-color: var(--player-orange);
+}
+.player-yellow {
+    background-color: var(--player-yellow);
+}
+.player-green {
+    background-color: var(--player-green);
+}
+.player-blue {
+    background-color: var(--player-blue);
+}
+.player-purple {
+    background-color: var(--player-purple);
+}
+.player-pink {
+    background-color: var(--player-pink);
+}
+.player-lime {
+    background-color: var(--player-lime);
+}
+.player-cyan {
+    background-color: var(--player-cyan);
+}
+.player-black {
+    background-color: var(--player-black);
+}
+.player-white {
+    background-color: var(--player-white);
+}
+.player-brown {
+    background-color: var(--player-brown);
+}
+.color-selector-button:disabled {
+    background-color: #808080;
+}
+
+.invisible {
+    visibility: hidden;
+}
+
 .hidden {
     display: none;
 }

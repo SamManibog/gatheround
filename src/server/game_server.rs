@@ -20,17 +20,48 @@ use axum_extra::extract::{
     cookie::{Cookie, SameSite},
 };
 use axum_server::{Handle, tls_rustls::RustlsConfig};
+use serde::Deserialize;
 use time::Duration;
 use tower_http::services::ServeDir;
 
 use crate::{
     board::players::PlayerColor,
     input::PlayerInputEvent,
-    server::{
-        DeserializableHostEvent, PrivateServerEvent, ServerEvent, ServerState, SessionKind,
-        SessionToken,
-    },
+    server::{PrivateServerEvent, ServerEvent, ServerState, SessionKind, SessionToken},
 };
+
+#[derive(Debug, Clone, Deserialize)]
+struct DeserializableHostEvent {
+    pub start_lobby: Option<bool>,
+    pub start_game_selector: Option<bool>,
+    pub kick_player: Option<String>,
+}
+
+impl TryInto<Vec<ServerEvent>> for &DeserializableHostEvent {
+    type Error = String;
+
+    fn try_into(self) -> Result<Vec<ServerEvent>, Self::Error> {
+        let mut vec = Vec::new();
+
+        if let Some(true) = self.start_lobby {
+            vec.push(ServerEvent::EnterLobby);
+        }
+
+        if let Some(true) = self.start_game_selector {
+            vec.push(ServerEvent::EnterGameSelector);
+        }
+
+        if let Some(color_str) = &self.kick_player {
+            if let Some(color) = PlayerColor::from_name(&color_str) {
+                vec.push(ServerEvent::TryKickPlayer(color));
+            } else {
+                return Err(format!("invalid color: {color_str}"));
+            }
+        }
+
+        Ok(vec)
+    }
+}
 
 #[derive(Debug)]
 pub struct GameServer {
@@ -470,6 +501,14 @@ impl GameServer {
             .lock()
             .expect("Unable to kick player")
             .kick_player(color);
+    }
+
+    /// hint that player kicks are allowed or not
+    pub fn set_kicks_allowed_hint(&self, allowed: bool) {
+        self.state
+            .lock()
+            .expect("unable to update kicks allowed hint")
+            .set_kicks_allowed_hint(allowed);
     }
 
     pub fn poll_inputs(&self) -> impl Iterator<Item = PlayerInputEvent> {

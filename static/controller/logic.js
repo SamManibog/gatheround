@@ -16,6 +16,21 @@ function logToSite() {
 //logToSite();
 
 const trackpad = document.getElementById("trackpad");
+const playerButtons = {
+    red: document.getElementById("playerRed"),
+    orange: document.getElementById("playerOrange"),
+    yellow: document.getElementById("playerYellow"),
+    green: document.getElementById("playerGreen"),
+    blue: document.getElementById("playerBlue"),
+    purple: document.getElementById("playerPurple"),
+    pink: document.getElementById("playerPink"),
+    lime: document.getElementById("playerLime"),
+    cyan: document.getElementById("playerCyan"),
+    black: document.getElementById("playerBlack"),
+    white: document.getElementById("playerWhite"),
+    brown: document.getElementById("playerBrown"),
+};
+
 
 let playerSocket = null;
 let continueJoinLoop = true;
@@ -171,12 +186,16 @@ async function initPlayerState() {
     continueJoinLoop = false;
     continuePlayerLoop = true;
 
-    const state_response = await fetch("/games/player-state", {
+    const response = await fetch("/games/player-state", {
         method: "POST",
         credentials: 'include',
     })
 
-    console.log("TODO: init player state, got: ", await state_response.text());
+    if (response.ok) {
+        console.log("TODO: init player state, got: ", await response.text());
+    } else {
+        connect();
+    }
 
     // begin player event loop
     continuePlayerLoop = true;
@@ -184,12 +203,16 @@ async function initPlayerState() {
 }
 
 async function handlePlayerEvents() {
-    const event_response = await fetch("/games/player-events", {
+    const response = await fetch("/games/player-events", {
         method: "POST",
         credentials: 'include',
     })
 
-    console.log("TODO: handle player events, got: ", await event_response.text());
+    if (response.ok) {
+        console.log("TODO: init player state, got: ", await response.text());
+    } else {
+        connect();
+    }
 
     // call again to perpetuate loop
     if (continuePlayerLoop) {
@@ -255,24 +278,8 @@ async function handleJoinEvents() {
 }
 
 function handleJoinState(state) {
-    const playerButtons = {
-        red: document.getElementById("playerRed"),
-        orange: document.getElementById("playerOrange"),
-        yellow: document.getElementById("playerYellow"),
-        green: document.getElementById("playerGreen"),
-        blue: document.getElementById("playerBlue"),
-        purple: document.getElementById("playerPurple"),
-        pink: document.getElementById("playerPink"),
-        lime: document.getElementById("playerLime"),
-        cyan: document.getElementById("playerCyan"),
-        black: document.getElementById("playerBlack"),
-        white: document.getElementById("playerWhite"),
-        brown: document.getElementById("playerBrown"),
-    };
-
     const playerSet = new Set();
     for (player of state.players) {
-        console.log("playing: ", player);
         playerSet.add(player);
     }
 
@@ -300,7 +307,6 @@ function connectWebSocket(url) {
 
         // Resolve the promise when connection is successfully established
         socket.addEventListener('open', () => {
-            console.log('WebSocket connection opened successfully.');
             resolve(socket);
         }, { once: true }); // Automatically cleans up the event listener
 
@@ -317,8 +323,6 @@ function connectWebSocket(url) {
  * color should only be nullish if a player session was established
 */
 async function enterPlayerMode(color_opt) {
-    console.log("establishing websocket");
-
     const sessionId = getCookie("session_id");
 
     const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
@@ -327,7 +331,7 @@ async function enterPlayerMode(color_opt) {
     // initialize socket
     playerSocket = await connectWebSocket(socketUrl);
     if (playerSocket == null) {
-        return enterJoinMode();
+        return connect();
     }
 
     // check for connection acceptance or rejection
@@ -343,26 +347,20 @@ async function enterPlayerMode(color_opt) {
         color: color_opt,
     }));
     const connectionResponse = await connectionPromise;
-    console.log("got socket init response: ", connectionResponse);
     if (connectionResponse.data == "rejected") {
-        return enterJoinMode();
+        return connect();
     }
 
     // do player mode things
-    console.log("entered player mode");
     focusPage("inputPage");
     initPlayerState();
 }
 
-async function enterJoinMode() {
-    console.log("entered join mode");
-
-    playerSocket = null;
-    focusPage("joinPage");
-    initJoinState();
-}
-
 async function connect() {
+    continuePlayerLoop = false;
+    continueJoinLoop = false;
+    playerSocket = null;
+
     const response = await fetch('/games/join', {
         method: "POST",
         credentials: 'include',
@@ -373,7 +371,8 @@ async function connect() {
     if (response_text == "is player") {
         enterPlayerMode(null);
     } else {
-        enterJoinMode();
+        focusPage("joinPage");
+        initJoinState();
     }
 }
 connect()
