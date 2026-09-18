@@ -243,7 +243,6 @@ async function handleJoinEvents() {
     })
 
     if (response.ok) {
-        console.log(await response.text())
         handleJoinState(await response.json());
     } else {
         console.error(`ERROR [${response.status}]: ${await response.text()}`);
@@ -279,7 +278,7 @@ function handleJoinState(state) {
 
     for (buttonName in playerButtons) {
         const button = playerButtons[buttonName];
-        if (playerSet.has(button)) {
+        if (playerSet.has(buttonName)) {
             button.classList.add("invisible");
         } else {
             button.classList.remove("invisible");

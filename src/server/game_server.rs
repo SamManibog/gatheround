@@ -409,16 +409,16 @@ impl GameServer {
                     Self::HOST_PATH
                 );
 
-                axum_server::bind_rustls(socket_addr, tls_config)
-                    .handle(handle_clone)
-                    .serve(app.into_make_service())
-                    .await
-                    .expect("Server failed to run");
-
                 /*
-                                let listener = tokio::net::TcpListener::bind(&address_clone).await.unwrap();
-                                axum::serve(listener, app).await.unwrap();
+                                axum_server::bind_rustls(socket_addr, tls_config)
+                                    .handle(handle_clone)
+                                    .serve(app.into_make_service())
+                                    .await
+                                    .expect("Server failed to run");
                 */
+
+                let listener = tokio::net::TcpListener::bind(&address_clone).await.unwrap();
+                axum::serve(listener, app).await.unwrap();
             });
         });
 
