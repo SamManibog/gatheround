@@ -194,7 +194,7 @@ async function initPlayerState() {
     if (response.ok) {
         console.log("TODO: init player state, got: ", await response.text());
     } else {
-        connect();
+        return connect();
     }
 
     // begin player event loop
@@ -211,7 +211,9 @@ async function handlePlayerEvents() {
     if (response.ok) {
         console.log("TODO: init player state, got: ", await response.text());
     } else {
-        connect();
+        if (response.status != 403) {
+            return connect();
+        }
     }
 
     // call again to perpetuate loop
@@ -251,7 +253,10 @@ async function initJoinState() {
     if (response.ok) {
         handleJoinState(await response.json());
     } else {
-        console.error(`ERROR [${response.status}]: ${await response.text()}`);
+        const responseText = await respones.text();
+        if (responseText != "upgraded to player") {
+            console.error(`ERROR [${response.status}]: ${await response.text()}`);
+        }
     }
 
     // begin join event loop
@@ -268,7 +273,10 @@ async function handleJoinEvents() {
     if (response.ok) {
         handleJoinState(await response.json());
     } else {
-        console.error(`ERROR [${response.status}]: ${await response.text()}`);
+        const responseText = await respones.text();
+        if (responseText != "upgraded to player") {
+            console.error(`ERROR [${response.status}]: ${await response.text()}`);
+        }
     }
 
     // call again to perpetuate loop
@@ -278,6 +286,12 @@ async function handleJoinEvents() {
 }
 
 function handleJoinState(state) {
+    if (state.joins_allowed) {
+        focusPage("joinPage");
+    } else {
+        focusPage("joinsDisabledPage");
+    }
+
     const playerSet = new Set();
     for (player of state.players) {
         playerSet.add(player);
