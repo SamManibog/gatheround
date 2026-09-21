@@ -13,6 +13,7 @@ use crate::{
         irs::{EntityIdentifier, PieceIR, PileIR, TextureIR},
         players::PlayerColor,
     },
+    game::GameEndHandle,
     platform::IPlatform,
     utils::color::{IColor, color_from_lua_value},
     utils::ecs::EntityTrait,
@@ -165,6 +166,7 @@ pub fn get_lua_instance<
     project_path: &Path,
     board_cell: &Rc<RefCell<BoardManager<C, R, V, S, T, F>>>,
     platform_cell: &Rc<RefCell<P>>,
+    game_end_handle: GameEndHandle,
 ) -> Lua {
     let exclude_libs = StdLib::IO | StdLib::OS | StdLib::COROUTINE;
     let libs = StdLib::ALL_SAFE & !exclude_libs;
@@ -1322,6 +1324,11 @@ pub fn get_lua_instance<
             .expect("board is already borrowed");
 
         board.dimensions().into_lua_table(&lua)
+    });
+
+    create_game_api_function(&lua, "end_game", move |_, _: ()| {
+        game_end_handle.end_game();
+        Ok(())
     });
 
     // load default update function to prevent immediate crash

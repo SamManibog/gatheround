@@ -6,7 +6,7 @@ use crate::{
     assets,
     board::{BoardManager, players::PlayerColor},
     cheat_buffer::CheatBuffer,
-    game::{self},
+    game::{self, GameOverState},
     input::InputState,
     lua::{FromLuaTable, get_lua_instance},
     platform::{IPlatform, IRenderer, ITextureCompiler},
@@ -22,6 +22,7 @@ enum BoardMode {
     Game {
         lua: Lua,
         update_callback: mlua::Function,
+        game_over: GameOverState,
     },
     Lobby,
     GameSelector,
@@ -169,7 +170,13 @@ impl<
         self.board_cell.borrow_mut().reset();
 
         // load lua state for the game
-        let lua: Lua = get_lua_instance(&project_path, &self.board_cell, &self.platform_cell);
+        let game_over = GameOverState::new();
+        let lua: Lua = get_lua_instance(
+            &project_path,
+            &self.board_cell,
+            &self.platform_cell,
+            game_over.end_game_handle(),
+        );
         let main_path = project_path.join(game::MAIN_LUA_FILE);
         let script_content = std::fs::read_to_string(&main_path)
             .expect(&format!("Unable to read lua file '{:#?}'.", &main_path));
@@ -187,6 +194,7 @@ impl<
         self.board_mode = BoardMode::Game {
             lua,
             update_callback,
+            game_over,
         };
 
         // prevent new players from joining
@@ -364,11 +372,12 @@ impl<
             return self.start_game_selector();
         }
 
-        let (lua, lua_update_callback) = match &mut self.board_mode {
+        let (lua, lua_update_callback, game_over) = match &mut self.board_mode {
             BoardMode::Game {
                 lua,
                 update_callback,
-            } => (lua, update_callback),
+                game_over,
+            } => (lua, update_callback, game_over),
             _ => unreachable!(),
         };
 
@@ -377,6 +386,11 @@ impl<
             .call::<MultiValue>(self.input_state.update(&lua, self.server.poll_inputs()))
         {
             eprintln!("Got runtime error: {err}");
+        }
+
+        if game_over.is_over() {
+            self.start_game_selector();
+            return;
         }
 
         // run cheats

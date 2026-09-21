@@ -35,7 +35,7 @@ pub enum SessionKind {
 pub struct SessionToken([u8; Self::LENGTH]);
 
 impl SessionToken {
-    pub const LENGTH: usize = 8;
+    pub const LENGTH: usize = 16;
 
     pub fn new() -> Self {
         let mut bytes = [0; Self::LENGTH];
@@ -123,29 +123,12 @@ impl TryFrom<DeserializableSessionSocketHandshake> for SessionSocketHandshake {
     }
 }
 
-#[derive(Debug)]
-pub(super) enum WebRtcSetupError {
-    NonPlayer,
-    WebRtcError(webrtc::error::Error),
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum NewPlayerError {
     GameFull,
     NewJoinsDisabled,
     ColorAlreadyUsed,
     SessionDoesNotExist,
-}
-
-impl NewPlayerError {
-    pub fn status_code(&self) -> StatusCode {
-        match self {
-            Self::GameFull => StatusCode::LOCKED,
-            Self::NewJoinsDisabled => StatusCode::LOCKED,
-            Self::ColorAlreadyUsed => StatusCode::CONFLICT,
-            Self::SessionDoesNotExist => StatusCode::UNAUTHORIZED,
-        }
-    }
 }
 
 impl Display for NewPlayerError {
@@ -949,68 +932,5 @@ impl ServerState {
 
         self.mark_host_needs_update();
         self.send_host_state();
-    }
-
-    /// register a webrtc connection for trackpad input
-    pub async fn handle_webrtc_offer(
-        &mut self,
-        token: &SessionToken,
-        offer_sdp: String,
-    ) -> Result<String, WebRtcSetupError> {
-        todo!()
-        /*
-                let player = if let Some(session) = self.session_states.get_mut(token) {
-                    match &mut session {
-                        SessionState::Player(p) => p,
-                        _ => return Err(WebRtcSetupError::NonPlayer),
-                    }
-                } else {
-                    return Err(WebRtcSetupError::NonPlayer);
-                };
-
-                let config = RTCConfigurationBuilder::new()
-                    .with_ice_servers(Vec::new())
-                    .build();
-                let peer_connection =
-                    match Arc::new(PeerConnectionBuilder::new().with_configuration(config))
-                        .build()
-                        .await
-                    {
-                        Ok(connection) => connection,
-                        Err(err) => return Err(WebRtcSetupError::WebRtcError(err)),
-                    };
-
-                // Register callback for incoming data channel created by the client
-                peer_connection.create_data_channel(Box::new(|dc| {
-                    Box::pin(async move {
-                        let dc_label = dc.label().to_string();
-                        println!("DataChannel initialized: {}", dc_label);
-
-                        dc.on_message(Box::new(move |msg| {
-                            Box::pin(async move {
-                                let text = String::from_utf8_lossy(&msg.data);
-                                // Process low-latency input packet here
-                                println!("Received input: {}", text);
-                            })
-                        }));
-                    })
-                }));
-
-                // Parse the client's offer
-                let offer = match RTCSessionDescription::offer(offer_sdp) {
-                    Ok(offer) => offer,
-                    Err(err) => return Err(WebRtcSetupError::WebRtcError(Box::new(err))),
-                };
-                peer_connection.set_remote_description(offer).await?;
-
-                // Create and set local answer SDP
-                let answer = peer_connection.create_answer(None).await?;
-                peer_connection
-                    .set_local_description(answer.clone())
-                    .await?;
-
-                // Return the SDP answer back to the JS client
-                Ok(answer.sdp)
-        */
     }
 }

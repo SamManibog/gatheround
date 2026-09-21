@@ -253,9 +253,13 @@ async function initJoinState() {
     if (response.ok) {
         handleJoinState(await response.json());
     } else {
-        const responseText = await respones.text();
+        const responseText = await response.text();
+        if (responseText == "sessiohn does not exist") {
+            continueJoinLoop = false;
+            focusPage("joinsDisabledPage");
+        }
         if (responseText != "upgraded to player") {
-            console.error(`ERROR [${response.status}]: ${await response.text()}`);
+            console.error(`ERROR [${response.status}]: ${responseText}`);
         }
     }
 
@@ -273,9 +277,9 @@ async function handleJoinEvents() {
     if (response.ok) {
         handleJoinState(await response.json());
     } else {
-        const responseText = await respones.text();
+        const responseText = await response.text();
         if (responseText != "upgraded to player") {
-            console.error(`ERROR [${response.status}]: ${await response.text()}`);
+            console.error(`ERROR [${response.status}]: ${responseText}`);
         }
     }
 

@@ -1,7 +1,9 @@
 use std::{
+    cell::Cell,
     fs::File,
     io::BufReader,
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
 use serde::Deserialize;
@@ -116,4 +118,38 @@ pub fn load_game_entries<T, ITC: ITextureCompiler<Texture = T>>(
     }
 
     entries
+}
+
+#[derive(Debug, Clone)]
+pub struct GameEndHandle {
+    end_game: Rc<Cell<bool>>,
+}
+
+impl GameEndHandle {
+    pub fn end_game(&self) {
+        self.end_game.set(false);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GameOverState {
+    end_game: Rc<Cell<bool>>,
+}
+
+impl GameOverState {
+    pub fn new() -> Self {
+        Self {
+            end_game: Rc::new(Cell::new(false)),
+        }
+    }
+
+    pub fn end_game_handle(&self) -> GameEndHandle {
+        GameEndHandle {
+            end_game: self.end_game.clone(),
+        }
+    }
+
+    pub fn is_over(&self) -> bool {
+        self.end_game.get()
+    }
 }
