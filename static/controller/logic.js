@@ -386,12 +386,16 @@ async function connect() {
         credentials: 'include',
     });
 
-    const response_text = await response.text();
-
-    if (response_text == "is player") {
-        enterPlayerMode(null);
+    if (!response.ok) {
+        focusPage("joinsDisabledPage")
     } else {
-        initJoinState();
+        const session_state = await response.json();
+
+        if (session_state.is_player) {
+            enterPlayerMode(null);
+        } else {
+            initJoinState();
+        }
     }
 }
 connect()

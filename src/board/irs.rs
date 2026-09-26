@@ -802,7 +802,7 @@ impl<E: EntityTrait> From<String> for EntityIdentifier<E> {
     }
 }
 
-impl<E: EntityTrait> FromLuaValue for EntityIdentifier<E> {
+impl<E: EntityTrait + FromLuaValue> FromLuaValue for EntityIdentifier<E> {
     fn try_from_lua_value(value: &mlua::Value) -> Result<Self, String> {
         if let mlua::Value::String(s) = value {
             Ok(Self::Name(format!("{}", s.display())))

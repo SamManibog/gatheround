@@ -1,5 +1,18 @@
 const body = document.querySelector('body');
 
+function focusPage(page_name) {
+    const pages = {
+        joinsDisabledPage: document.getElementById('joinsDisabledPage'),
+        dashboardPage: document.getElementById("dashboardPage"),
+        hostCandidatePage: document.getElementById("hostCandidatePage")
+    };
+
+    for (const page in pages) {
+        pages[page].classList.add("hidden");
+    }
+    pages[page_name].classList.remove("hidden");
+}
+
 // applies a 1-second cooldown to a button
 function applyCooldown(element) {
     element.disabled = true;
@@ -53,6 +66,8 @@ openGameSelectorButton.addEventListener("click", async (e) => {
 
 let continueHostLoop = true;
 async function initHostState() {
+    focusPage("dashboardPage")
+
     const response = await fetch("/games/host-state", {
         method: "POST",
         credentials: 'include',
@@ -131,22 +146,43 @@ async function handleHostEvents() {
     }
 }
 
-async function claimHost() {
-    const claim_response = await fetch('/games/claim-host', {
+// run setup steps
+(async () => {})().then(async () => {
+    const session_response = await fetch('/games/join', {
         method: "POST",
         credentials: 'include',
     });
 
-    if (!claim_response.ok) {
-        console.error(`ERROR [${claim_response.status}]: ${await claim_response.text()}`);
-        return false;
-    }
-    return true;
-}
+    if (!session_response.ok) {
+        focusPage("joinsDisabledPage");
+    } else {
+        const session_state = await session_response.json();
+        if (session_state.is_host) {
+            return initHostState();
+        }
 
-claimHost().then(async (successful_claim) => {
-    if (successful_claim) {
-        body.classList.remove("hidden");
-        initHostState();
+        const host_code_response = await fetch('claim-host', {
+            method: "POST",
+            credentials: 'include',
+        });
+
+        if (!host_code_response.ok) {
+            console.log(await host_code_response.text());
+            return focusPage("joinsDisabledPage");
+        }
+
+        document.getElementById("hostCode").textContent = await host_code_response.text();
+        focusPage("hostCandidatePage");
+
+        const is_host_state = await fetch("/games/is-host", {
+            method: "POST",
+            credentials: 'include',
+        })
+
+        if (is_host_state.ok) {
+            initHostState();
+        } else {
+            focusPage("joinsDisabledPage");
+        }
     }
 })

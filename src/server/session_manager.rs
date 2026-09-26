@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     fmt::Display,
+    str::FromStr,
     sync::{Arc, Mutex, mpsc},
     time::Duration,
 };
@@ -14,14 +15,14 @@ use axum::{
     response::Response,
 };
 use base64::Engine;
-use rand::Rng;
+use rand::{Rng, seq::SliceRandom};
 use serde::{Deserialize, Serialize};
 use tokio::{self, sync::oneshot};
 
 use crate::{
     board::players::PlayerColor,
     input::{DeserializableInputEvent, InputEvent, PlayerInputEvent},
-    utils::ecs::DenseComponentManager,
+    utils::ecs::{DenseComponentManager, EntityTrait},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +30,55 @@ pub enum SessionKind {
     NonPlayer,
     PlayerController,
     Host,
+}
+
+#[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
+pub struct HostJoinCode(u32);
+
+impl FromStr for HostJoinCode {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let trimmed = s.trim();
+
+        let num_result = str::parse::<u32>(trimmed);
+        let num = match num_result {
+            Ok(n) => n,
+            Err(_) => return Err(()),
+        };
+
+        if trimmed.len() as u32 != Self::LENGTH {
+            return Err(());
+        }
+
+        if num >= Self::MAX_JOIN_CODE {
+            return Err(());
+        }
+
+        Ok(Self(num))
+    }
+}
+
+impl Display for HostJoinCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let width = Self::LENGTH as usize;
+        write!(f, "{:0>width$}", self.0)
+    }
+}
+
+impl EntityTrait for HostJoinCode {
+    fn id(&self) -> u32 {
+        self.0
+    }
+
+    fn from_id(id: usize) -> Self {
+        Self(id as u32)
+    }
+}
+
+impl HostJoinCode {
+    pub const LENGTH: u32 = 4;
+    pub const MAX_JOIN_CODE: u32 = 10_u32.pow(Self::LENGTH) - 1;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -66,12 +116,6 @@ impl SessionToken {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PrivateServerEvent {
-    HostConnected,
-    PublicEvent(ServerEvent),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerEvent {
     EnterLobby,
     EnterGameSelector,
@@ -79,12 +123,6 @@ pub enum ServerEvent {
     SetHost(PlayerColor),
     Joined(PlayerColor),
     TryKickPlayer(PlayerColor),
-}
-
-impl From<ServerEvent> for PrivateServerEvent {
-    fn from(value: ServerEvent) -> Self {
-        Self::PublicEvent(value)
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -124,6 +162,24 @@ impl TryFrom<DeserializableSessionSocketHandshake> for SessionSocketHandshake {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NewHostCandidateError {
+    HostExists,
+    HostCodesExhausted,
+    SessionDoesNotExist,
+}
+
+impl Display for NewHostCandidateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::HostExists => "host exists",
+            Self::HostCodesExhausted => "host codes exhausted",
+            Self::SessionDoesNotExist => "session does not exist",
+        };
+        write!(f, "{}", message)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum NewPlayerError {
     GameFull,
     NewJoinsDisabled,
@@ -151,10 +207,14 @@ struct PlayerState {
 }
 
 impl PlayerState {
-    pub fn new(color: PlayerColor, websocket_handle: oneshot::Sender<()>) -> Self {
+    pub fn new(
+        color: PlayerColor,
+        initial_state: String,
+        websocket_handle: oneshot::Sender<()>,
+    ) -> Self {
         Self {
             color,
-            update_state: SessionUpdateState::new(),
+            update_state: SessionUpdateState::new(initial_state),
             websocket_handle,
         }
     }
@@ -166,9 +226,9 @@ struct NonPlayerState {
 }
 
 impl NonPlayerState {
-    pub fn new() -> Self {
+    pub fn new(initial_state: String) -> Self {
         Self {
-            update_state: SessionUpdateState::new(),
+            update_state: SessionUpdateState::new(initial_state),
         }
     }
 }
@@ -180,54 +240,112 @@ enum SessionState {
 }
 
 impl SessionState {
-    pub fn mark_as_needs_update(&mut self) {
-        match self {
-            Self::Player(p) => p.update_state.needs_update = true,
-            Self::NonPlayer(n) => n.update_state.needs_update = true,
-        }
-    }
-
     pub fn is_player(&self) -> bool {
         match self {
             Self::Player(_) => true,
             Self::NonPlayer(_) => false,
         }
     }
+
+    pub fn color(&self) -> Option<PlayerColor> {
+        match self {
+            Self::Player(p) => Some(p.color),
+            Self::NonPlayer(_) => None,
+        }
+    }
 }
 
 #[derive(Debug)]
 struct SessionUpdateState {
-    update_request_opt: Option<oneshot::Sender<(StatusCode, String)>>,
-    needs_update: bool,
+    /// the completer for the current subscription, if it exists
+    update_completer_opt: Option<oneshot::Sender<(StatusCode, String)>>,
+
+    /// the response to be sent upon the next subscription is registered
+    /// This must be none if update_request_opt.is_some(), because the response should be sent as
+    /// soon as an update_completer becomes available.
+    /// This may be none if update_request_opt.is_none()
+    queued_response: Option<(StatusCode, String)>,
 }
 
 impl SessionUpdateState {
-    pub fn new() -> Self {
+    pub fn new(value: String) -> Self {
         Self {
-            update_request_opt: None,
-            needs_update: true,
+            update_completer_opt: None,
+            queued_response: Some((StatusCode::ACCEPTED, value)),
         }
     }
 
+    /// returns a oneshot event that resolves to a status code and string output
     pub fn subscribe(&mut self) -> oneshot::Receiver<(StatusCode, String)> {
-        if let Some(request) = self.update_request_opt.take() {
-            let _ = request.send((StatusCode::BAD_REQUEST, format!("request overwritten")));
+        if let Some(completer) = self.update_completer_opt.take() {
+            let _ = completer.send((StatusCode::BAD_REQUEST, format!("request overwritten")));
         }
 
         let (sender, receiver) = oneshot::channel();
-        self.update_request_opt = Some(sender);
+        if let Some(response) = self.queued_response.take() {
+            // complete subscription immediately if possible
+            let _ = sender.send(response);
+        } else {
+            // create new subscription
+            self.update_completer_opt = Some(sender);
+        }
         receiver
     }
 
     /// attempts to send a completed response
     /// returning true on success and false on failure to send
     pub fn try_complete(&mut self, code: StatusCode, response: String) -> bool {
-        if let Some(request) = self.update_request_opt.take() {
-            self.needs_update = false;
+        if let Some(request) = self.update_completer_opt.take() {
+            self.queued_response = None;
             let _ = request.send((code, response));
             true
         } else {
+            self.queued_response = Some((code, response));
             false
+        }
+    }
+}
+
+#[derive(Debug)]
+struct HostCandidateState {
+    code: HostJoinCode,
+    acceptance_sender: Option<oneshot::Sender<HostCandidateResponse>>,
+}
+
+impl HostCandidateState {
+    pub fn new(code: HostJoinCode) -> Self {
+        Self {
+            code,
+            acceptance_sender: None,
+        }
+    }
+
+    pub fn subscribe(&mut self) -> oneshot::Receiver<HostCandidateResponse> {
+        if let Some(s) = self.acceptance_sender.take() {
+            let _ = s.send(HostCandidateResponse::Overwritten);
+        }
+        let (sender, receiver) = oneshot::channel();
+        self.acceptance_sender = Some(sender);
+        receiver
+    }
+
+    pub fn accept(mut self) {
+        if let Some(sender) = self.acceptance_sender.take() {
+            let _ = sender.send(HostCandidateResponse::Accepted);
+        }
+    }
+
+    pub fn reject(mut self) {
+        if let Some(sender) = self.acceptance_sender.take() {
+            let _ = sender.send(HostCandidateResponse::Rejected);
+        }
+    }
+}
+
+impl Drop for HostCandidateState {
+    fn drop(&mut self) {
+        if let Some(s) = self.acceptance_sender.take() {
+            let _ = s.send(HostCandidateResponse::Rejected);
         }
     }
 }
@@ -251,15 +369,119 @@ struct NonPlayerStateResponse<'a> {
 }
 
 #[derive(Debug)]
+struct HostClaimState {
+    code_queue: Vec<HostJoinCode>,
+    session_candidates: HashMap<SessionToken, HostCandidateState>,
+    join_codes: DenseComponentManager<HostJoinCode, SessionToken>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HostCandidateResponse {
+    Accepted,
+    Rejected,
+    Overwritten,
+}
+
+impl HostClaimState {
+    pub fn new() -> Self {
+        let mut code_queue = Vec::from_iter(
+            (0..=HostJoinCode::MAX_JOIN_CODE)
+                .into_iter()
+                .map(|i| HostJoinCode(i)),
+        );
+        code_queue.shuffle(&mut rand::rng());
+
+        Self {
+            code_queue,
+            session_candidates: HashMap::new(),
+            join_codes: DenseComponentManager::with_capacity(HostJoinCode::MAX_JOIN_CODE as usize),
+        }
+    }
+
+    /// kicks the given candidate
+    pub fn kick_candidate(&mut self, token: &SessionToken) {
+        if let Some(candidate) = self.session_candidates.remove(token) {
+            self.join_codes.remove(candidate.code);
+        }
+    }
+
+    /// checks if the token belongs to a host candidate
+    pub fn is_host_candidate(&self, token: &SessionToken) -> bool {
+        self.session_candidates.contains_key(token)
+    }
+
+    /// attempts to create a new or get an existing host candidate, fails if candidate count has been exhausted
+    /// on success returns the join code
+    ///
+    /// fails if host codes have been exhausted
+    pub fn make_host_candidate(
+        &mut self,
+        token: SessionToken,
+    ) -> Result<HostJoinCode, NewHostCandidateError> {
+        if let Some(candidate) = self.session_candidates.get(&token) {
+            return Ok(candidate.code.clone());
+        }
+
+        let code = match self.code_queue.pop() {
+            Some(c) => c,
+            None => return Err(NewHostCandidateError::HostCodesExhausted),
+        };
+
+        self.join_codes.insert(code.clone(), token.clone());
+        self.session_candidates
+            .insert(token, HostCandidateState::new(code));
+
+        Ok(code)
+    }
+
+    /// subscribes the session token to its host candidate response
+    pub fn subscribe_to_candidate_response(
+        &mut self,
+        token: &SessionToken,
+    ) -> Option<oneshot::Receiver<HostCandidateResponse>> {
+        if let Some(candidate) = self.session_candidates.get_mut(token) {
+            Some(candidate.subscribe())
+        } else {
+            None
+        }
+    }
+
+    /// attempts to mark the host as accepted,
+    /// returns the host's session token on success
+    ///
+    /// after successful acceptance, you may drop this struct
+    pub fn try_accept_host(&mut self, code: HostJoinCode) -> Option<SessionToken> {
+        if let Some(token) = self.join_codes.remove(code) {
+            // send accepted status
+            let host_session = self.session_candidates.remove(&token).unwrap();
+            host_session.accept();
+
+            // send rejected status to other hosts
+            for token in self.join_codes.component_iter() {
+                let state = self.session_candidates.remove(token).unwrap();
+                state.reject();
+            }
+            self.join_codes.clear();
+
+            Some(token)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug)]
 pub(super) struct ServerState {
     host: Option<(SessionToken, SessionUpdateState)>,
 
     input_sender: mpsc::Sender<PlayerInputEvent>,
-    event_sender: mpsc::Sender<PrivateServerEvent>,
+    event_sender: mpsc::Sender<ServerEvent>,
 
     permanent_session_count: usize,
     session_states: HashMap<SessionToken, SessionState>,
     non_player_sessions: VecDeque<SessionToken>,
+
+    host_claim_state: Option<HostClaimState>,
 
     players: DenseComponentManager<PlayerColor, SessionToken>,
     joins_blocked: bool,
@@ -273,7 +495,7 @@ impl ServerState {
 
     pub fn new(
         input_sender: mpsc::Sender<PlayerInputEvent>,
-        event_sender: mpsc::Sender<PrivateServerEvent>,
+        event_sender: mpsc::Sender<ServerEvent>,
     ) -> Self {
         Self {
             host: None,
@@ -285,9 +507,49 @@ impl ServerState {
             session_states: HashMap::with_capacity(PlayerColor::COLOR_COUNT),
             non_player_sessions: VecDeque::with_capacity(Self::NON_PLAYER_SESSION_MAX),
 
+            host_claim_state: Some(HostClaimState::new()),
+
             players: DenseComponentManager::with_capacity(PlayerColor::COLOR_COUNT),
             joins_blocked: true,
             kicks_allowed: true,
+        }
+    }
+
+    /// removes the given session, fails silently only if that session is the host or does not exist
+    fn remove_session(&mut self, token: &SessionToken) {
+        // dont remove if host
+        if Some(token) == self.host.as_ref().map(|(t, _)| t) {
+            return;
+        }
+
+        // remove session state
+        let session_state = match self.session_states.remove(&token) {
+            Some(s) => s,
+            None => return,
+        };
+
+        // cleanup session
+        match session_state {
+            SessionState::Player(mut p) => {
+                self.players.remove(p.color);
+                self.permanent_session_count -= 1;
+
+                p.update_state
+                    .try_complete(StatusCode::FORBIDDEN, String::from("kicked"));
+
+                self.send_global_state();
+            }
+            SessionState::NonPlayer(mut n) => {
+                n.update_state.try_complete(
+                    StatusCode::REQUEST_TIMEOUT,
+                    String::from("color selection took too long"),
+                );
+            }
+        }
+
+        // remove host join code
+        if let Some(claims) = &mut self.host_claim_state {
+            claims.kick_candidate(token);
         }
     }
 
@@ -295,7 +557,6 @@ impl ServerState {
         if self.joins_blocked {
             self.joins_blocked = false;
 
-            self.mark_non_players_need_update();
             self.send_all_non_players_state();
         }
     }
@@ -304,7 +565,6 @@ impl ServerState {
         if !self.joins_blocked {
             self.joins_blocked = true;
 
-            self.mark_non_players_need_update();
             self.send_all_non_players_state();
         }
     }
@@ -378,12 +638,14 @@ impl ServerState {
         let joins_allowed = self.joins_allowed();
         for session in self.session_states.values_mut() {
             match session {
-                SessionState::Player(_) => true,
+                SessionState::Player(_) => (),
 
-                SessionState::NonPlayer(n) => n.update_state.try_complete(
-                    StatusCode::ACCEPTED,
-                    Self::build_non_player_state_response(joins_allowed, players.as_slice()),
-                ),
+                SessionState::NonPlayer(n) => {
+                    n.update_state.try_complete(
+                        StatusCode::ACCEPTED,
+                        Self::build_non_player_state_response(joins_allowed, players.as_slice()),
+                    );
+                }
             };
         }
     }
@@ -416,11 +678,13 @@ impl ServerState {
         // propagate player update
         for session in self.session_states.values_mut() {
             match session {
-                SessionState::Player(p) => p.update_state.try_complete(
-                    StatusCode::ACCEPTED,
-                    Self::build_player_state_response(players.as_slice()),
-                ),
-                SessionState::NonPlayer(_) => true,
+                SessionState::Player(p) => {
+                    p.update_state.try_complete(
+                        StatusCode::ACCEPTED,
+                        Self::build_player_state_response(players.as_slice()),
+                    );
+                }
+                SessionState::NonPlayer(_) => (),
             };
         }
     }
@@ -470,41 +734,6 @@ impl ServerState {
             StatusCode::ACCEPTED,
             Self::build_host_state_response(host_color, &players, self.kicks_allowed),
         );
-    }
-
-    // marks all players as needing an update
-    fn mark_players_need_update(&mut self) {
-        for state in self.session_states.values_mut() {
-            match state {
-                SessionState::Player(p) => p.update_state.needs_update = true,
-                _ => (),
-            }
-        }
-    }
-
-    // marks all non players as needing an update
-    fn mark_non_players_need_update(&mut self) {
-        for state in self.session_states.values_mut() {
-            match state {
-                SessionState::NonPlayer(n) => n.update_state.needs_update = true,
-                _ => (),
-            }
-        }
-    }
-
-    // marks the host as needing an update
-    fn mark_host_needs_update(&mut self) {
-        if let Some((_, host_state)) = self.host.as_mut() {
-            host_state.needs_update = true;
-        }
-    }
-
-    // marks all sessions as needing an update
-    fn mark_all_need_update(&mut self) {
-        for state in self.session_states.values_mut() {
-            state.mark_as_needs_update();
-        }
-        self.mark_host_needs_update();
     }
 
     /// checks if a token controlls a player
@@ -606,13 +835,14 @@ impl ServerState {
         }
     }
 
-    /// creates a new session, returning its token on success
+    /// creats a new session with the given token
+    /// fails if new joins are disabled, unless no host exists
     pub fn new_session(&mut self) -> Option<SessionToken> {
-        if !self.joins_allowed() {
+        if !self.joins_allowed() && self.has_host() {
             return None;
         }
 
-        // kill old session
+        // kill old session if necessary
         if self.non_player_sessions.len() >= Self::NON_PLAYER_SESSION_MAX {
             if let Some(kicked_token) = self.non_player_sessions.pop_front() {
                 let session = self.session_states.get_mut(&kicked_token).unwrap();
@@ -620,20 +850,25 @@ impl ServerState {
                     SessionState::NonPlayer(n) => {
                         n.update_state.try_complete(
                             StatusCode::REQUEST_TIMEOUT,
-                            String::from("color selection took too long"),
+                            String::from("selection took too long"),
                         );
                     }
                     SessionState::Player(_) => unreachable!(),
                 }
+                self.remove_session(&kicked_token);
             }
         }
 
         let token = SessionToken::new();
         self.session_states.insert(
             token.clone(),
-            SessionState::NonPlayer(NonPlayerState::new()),
+            SessionState::NonPlayer(NonPlayerState::new(Self::build_non_player_state_response(
+                self.joins_allowed(),
+                &self.players.entity_iter().collect::<Vec<PlayerColor>>(),
+            ))),
         );
         self.non_player_sessions.push_back(token.clone());
+
         Some(token)
     }
 
@@ -814,7 +1049,13 @@ impl ServerState {
         );
 
         // create new player
-        *session = SessionState::Player(Box::new(PlayerState::new(color, cancel_sender)));
+        *session = SessionState::Player(Box::new(PlayerState::new(
+            color,
+            Self::build_player_state_response(
+                &self.players.entity_iter().collect::<Vec<PlayerColor>>(),
+            ),
+            cancel_sender,
+        )));
         self.players.insert(color, token.clone());
 
         if !is_host {
@@ -831,28 +1072,93 @@ impl ServerState {
                 .expect("Could not set host event to main thread.");
         }
 
-        // clear extraneous sessions
-        if !self.joins_allowed() {
-            for token in self.non_player_sessions.drain(..) {
-                let session = self.session_states.remove(&token).unwrap();
-                match session {
-                    SessionState::NonPlayer(mut n) => n
-                        .update_state
-                        .try_complete(StatusCode::FORBIDDEN, format!("kicked")),
-                    SessionState::Player(_) => unreachable!(),
-                };
-            }
-        }
-
-        self.mark_all_need_update();
         self.send_global_state();
 
         Ok(())
     }
 
+    /// subscribes to a host candidate response
+    pub fn subscribe_to_host_candidate_response(
+        &mut self,
+        token: &SessionToken,
+    ) -> Option<oneshot::Receiver<HostCandidateResponse>> {
+        if let Some(claims) = self.host_claim_state.as_mut() {
+            claims.subscribe_to_candidate_response(token)
+        } else {
+            None
+        }
+    }
+
+    /// checks if the token belongs to a host candidate
+    pub fn is_host_candidate(&self, token: &SessionToken) -> bool {
+        if let Some(claims) = &self.host_claim_state {
+            claims.is_host_candidate(token)
+        } else {
+            false
+        }
+    }
+
+    /// creates a new host candidate session, returning a future that resolves to a
+    /// HostCandidateResponse on success
+    pub fn make_host_candidate(
+        &mut self,
+        token: SessionToken,
+    ) -> Result<HostJoinCode, NewHostCandidateError> {
+        if !self.is_session(&token) {
+            return Err(NewHostCandidateError::SessionDoesNotExist);
+        }
+
+        if let Some(claims) = self.host_claim_state.as_mut() {
+            claims.make_host_candidate(token)
+        } else {
+            Err(NewHostCandidateError::HostExists)
+        }
+    }
+
+    /// claims the host for the based on a host join code
+    /// fails if the host is already set
+    /// fails if the host join code is invalid
+    pub fn claim_host(&mut self, code: HostJoinCode) -> Result<(), String> {
+        if self.has_host() {
+            return Err("host already set".to_string());
+        }
+
+        let claims = self.host_claim_state.as_mut().unwrap();
+        if let Some(token) = claims.try_accept_host(code) {
+            self.host = Some((
+                token.clone(),
+                SessionUpdateState::new(Self::build_host_state_response(
+                    None,
+                    &Vec::new(),
+                    self.kicks_allowed,
+                )),
+            ));
+
+            // reserve host's token
+            self.session_states.insert(
+                token.clone(),
+                SessionState::NonPlayer(NonPlayerState::new(
+                    Self::build_non_player_state_response(
+                        self.joins_allowed(),
+                        &self.players.entity_iter().collect::<Vec<PlayerColor>>(),
+                    ),
+                )),
+            );
+            self.non_player_sessions.push_back(token.clone());
+            self.permanent_session_count += 1;
+
+            // clear claims
+            self.host_claim_state = None;
+
+            Ok(())
+        } else {
+            Err("join code invalid".to_string())
+        }
+    }
+
     /// sets the host to the given token
-    /// registering the new session if the token is not already in use
-    pub fn set_host(&mut self, token: SessionToken) {
+    /// fails if the token does not correspond to a session
+    pub fn set_host(&mut self, token: SessionToken) -> Result<(), ()> {
         if let Some(session) = self.session_states.get(&token) {
             let _ = match session {
                 SessionState::Player(p) => {
@@ -861,50 +1167,32 @@ impl ServerState {
                 _ => Ok(()),
             };
         } else {
-            // reserve host's token
-            self.session_states.insert(
-                token.clone(),
-                SessionState::NonPlayer(NonPlayerState::new()),
-            );
-            self.non_player_sessions.push_back(token.clone());
-            self.permanent_session_count += 1;
+            return Err(());
         }
 
         if let Some((_, mut update_state)) = self.host.take() {
             update_state.try_complete(StatusCode::FORBIDDEN, String::from("kicked"));
-        } else {
-            let _ = self.event_sender.send(PrivateServerEvent::HostConnected);
         }
+        self.host = Some((
+            token.clone(),
+            SessionUpdateState::new(Self::build_host_state_response(
+                self.session_states
+                    .get(&token)
+                    .iter()
+                    .flat_map(|s| s.color())
+                    .next(),
+                &self.players.entity_iter().collect::<Vec<PlayerColor>>(),
+                self.kicks_allowed,
+            )),
+        ));
 
-        self.host = Some((token, SessionUpdateState::new()));
+        Ok(())
     }
 
     /// kicks the player of the given color
     pub fn kick_player(&mut self, player: PlayerColor) {
-        // make sure player exists and is not the host
-        if let Some(token) = self.players.get(player) {
-            if Some(&token) == self.host.as_ref().map(|(t, _)| t).as_ref() {
-                return;
-            }
-        } else {
-            return;
-        }
-
-        let token = self.players.remove(player).unwrap();
-        let session_state = self.session_states.remove(&token).unwrap();
-        self.permanent_session_count -= 1;
-
-        match session_state {
-            SessionState::Player(mut p) => {
-                p.update_state
-                    .try_complete(StatusCode::FORBIDDEN, String::from("kicked"));
-
-                self.mark_all_need_update();
-                self.send_global_state();
-            }
-
-            _ => unreachable!(),
-        }
+        let token = self.players.get(player).unwrap().clone();
+        self.remove_session(&token);
     }
 
     /// handles a host command for the given token
@@ -920,7 +1208,7 @@ impl ServerState {
         }
 
         for cmd in commands {
-            let _ = self.event_sender.send(PrivateServerEvent::PublicEvent(cmd));
+            let _ = self.event_sender.send(cmd);
         }
 
         true
@@ -930,7 +1218,6 @@ impl ServerState {
     pub fn set_kicks_allowed_hint(&mut self, allowed: bool) {
         self.kicks_allowed = allowed;
 
-        self.mark_host_needs_update();
         self.send_host_state();
     }
 }

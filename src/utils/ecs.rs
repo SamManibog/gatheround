@@ -20,7 +20,6 @@ pub trait EntityTrait:
     + Send
     + Sync
     + Sized
-    + FromLuaValue
 {
     fn id(&self) -> u32;
 
